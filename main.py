@@ -10,7 +10,7 @@ import swisseph as swe
 app = FastAPI(
     title="KP Stellar Astrology Engine",
     description="High-precision KP calculations using Swiss Ephemeris",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
@@ -71,14 +71,14 @@ def get_cusp_degree(cusp_tuple, house_num: int) -> float:
 def get_kp_coordinates(lon: float) -> Dict:
     """Calculates Sign, Sign Lord, Star, Star Lord, Sub-Lord, and Sub-Sub-Lord."""
     lon = lon % 360.0
-    sign_idx = int(lon // 30.0)
+    sign_idx = int(round(lon, 7) // 30.0) % 12
     sign_name, sign_lord = ZODIAC_SIGNS[sign_idx]
     deg_in_sign = lon - (sign_idx * 30.0)
 
-    nak_idx = int(lon // (360.0 / 27.0))
+    nak_idx = int(round(lon, 7) // (360.0 / 27.0)) % 27
     nak_name, star_lord = NAKSHATRAS[nak_idx]
     nak_start = nak_idx * (360.0 / 27.0)
-    deg_in_nak_mins = (lon - nak_start) * 60.0
+    deg_in_nak_mins = round((lon - nak_start) * 60.0, 6)
 
     start_lord_idx = DASHA_LORDS.index(star_lord)
     accum_mins = 0.0
@@ -87,16 +87,16 @@ def get_kp_coordinates(lon: float) -> Dict:
 
     for i in range(9):
         curr_lord = DASHA_LORDS[(start_lord_idx + i) % 9]
-        span_mins = (DASHA_YEARS[(start_lord_idx + i) % 9] / TOTAL_YEARS) * NAKSHATRA_SPAN
-        if accum_mins <= deg_in_nak_mins < (accum_mins + span_mins):
+        span_mins = round((DASHA_YEARS[(start_lord_idx + i) % 9] / TOTAL_YEARS) * NAKSHATRA_SPAN, 6)
+        if (accum_mins - 1e-6) <= deg_in_nak_mins < (accum_mins + span_mins - 1e-6):
             sub_lord = curr_lord
             deg_in_sub_mins = deg_in_nak_mins - accum_mins
             sub_start_idx = DASHA_LORDS.index(sub_lord)
             accum_ss_mins = 0.0
             for j in range(9):
                 curr_ss_lord = DASHA_LORDS[(sub_start_idx + j) % 9]
-                span_ss_mins = (DASHA_YEARS[(sub_start_idx + j) % 9] / TOTAL_YEARS) * span_mins
-                if accum_ss_mins <= deg_in_sub_mins < (accum_ss_mins + span_ss_mins):
+                span_ss_mins = round((DASHA_YEARS[(sub_start_idx + j) % 9] / TOTAL_YEARS) * span_mins, 6)
+                if (accum_ss_mins - 1e-6) <= deg_in_sub_mins < (accum_ss_mins + span_ss_mins - 1e-6):
                     sub_sub_lord = curr_ss_lord
                     break
                 accum_ss_mins += span_ss_mins
@@ -120,7 +120,7 @@ def get_kp_coordinates(lon: float) -> Dict:
 def build_kp_249_table() -> List[Dict]:
     """
     Generates the exact 249 KP Horary Sub Table of Prof. K.S. Krishnamurti.
-    Splits occur ONLY across the 6 nakshatras that genuinely cross 30° sign boundaries:
+    Splits occur ONLY across the 6 nakshatras that cross 30° sign boundaries:
     Krittika (30°), Punarvasu (90°), Uttara Phalguni (150°),
     Vishakha (210°), Uttara Ashadha (270°), and Purva Bhadrapada (330°).
     """
@@ -137,9 +137,7 @@ def build_kp_249_table() -> List[Dict]:
             curr_sign = int(round(curr_lon, 6) // 30.0)
             next_boundary = (curr_sign + 1) * 30.0
 
-            # Guard against floating-point epsilon traps at exact boundary crossings
             if curr_lon < (next_boundary - 1e-5) and end_lon > (next_boundary + 1e-5) and next_boundary < 360.0:
-                # Part 1: up to sign boundary
                 table.append({
                     "seed": len(table) + 1,
                     "start_lon": curr_lon,
@@ -149,7 +147,6 @@ def build_kp_249_table() -> List[Dict]:
                     "star_lord": star_lord,
                     "sub_lord": sub_lord
                 })
-                # Part 2: from sign boundary into next sign
                 table.append({
                     "seed": len(table) + 1,
                     "start_lon": next_boundary,
@@ -360,7 +357,7 @@ def calculate_horary(req: HoraryRequest):
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
     ayanamsa = swe.get_ayanamsa_ut(jd_ut)
 
-    # Ascendant lookup from Seed (1 to 249)
+    # Ascendant locked directly to 249 Table
     seed_entry = KP_249_TABLE[req.seed - 1]
     asc_sidereal = seed_entry["start_lon"]
     asc_tropical = (asc_sidereal + ayanamsa) % 360.0
@@ -383,20 +380,30 @@ def calculate_horary(req: HoraryRequest):
     cusps_trop, _ = swe.houses_armc(armc, req.lat, eps, b'P')
     cusps = {}
     for i in range(1, 13):
-        deg_trop = get_cusp_degree(cusps_trop, i)
-        sid_c = (deg_trop - ayanamsa) % 360.0
         if i == 1:
-            sid_c = asc_sidereal
-        coords = get_kp_coordinates(sid_c)
-        cusps[i] = {
-            "house": i,
-            "longitude": round(sid_c, 4),
-            "sign": coords["sign"],
-            "degree": coords["degree_in_sign"],
-            "sign_lord": coords["sign_lord"],
-            "star_lord": coords["star_lord"],
-            "sub_lord": coords["sub_lord"]
-        }
+            # Enforce 100% fidelity with the authentic KP 249 Seed Table
+            cusps[1] = {
+                "house": 1,
+                "longitude": round(asc_sidereal, 4),
+                "sign": seed_entry["sign"],
+                "degree": to_dms(asc_sidereal % 30.0),
+                "sign_lord": seed_entry["sign_lord"],
+                "star_lord": seed_entry["star_lord"],
+                "sub_lord": seed_entry["sub_lord"]
+            }
+        else:
+            deg_trop = get_cusp_degree(cusps_trop, i)
+            sid_c = (deg_trop - ayanamsa) % 360.0
+            coords = get_kp_coordinates(sid_c)
+            cusps[i] = {
+                "house": i,
+                "longitude": round(sid_c, 4),
+                "sign": coords["sign"],
+                "degree": coords["degree_in_sign"],
+                "sign_lord": coords["sign_lord"],
+                "star_lord": coords["star_lord"],
+                "sub_lord": coords["sub_lord"]
+            }
 
     # Planetary Coordinates at the Specified Query Moment
     PLANET_MAP = [

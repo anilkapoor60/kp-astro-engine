@@ -1,6 +1,8 @@
 import math
 from datetime import datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
+from dateutil import parser as date_parser
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import swisseph as swe
@@ -8,7 +10,7 @@ import swisseph as swe
 app = FastAPI(
     title="KP Stellar Astrology Engine",
     description="High-precision KP calculations using Swiss Ephemeris",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
@@ -41,18 +43,19 @@ TOTAL_YEARS = 120.0
 NAKSHATRA_SPAN = 800.0  # 13°20' in arcminutes
 
 # ==========================================
-# MATHEMATICAL HELPERS
+# MATHEMATICAL HELPER FUNCTIONS
 # ==========================================
 def to_dms(degrees: float) -> str:
     """Converts decimal degrees to clean DD° MM' SS\" string."""
+    degrees = degrees % 360.0
     deg = int(degrees)
     rem = (degrees - deg) * 60.0
     minute = int(rem)
     sec = int(round((rem - minute) * 60.0))
-    if sec == 60:
+    if sec >= 60:
         sec = 0
         minute += 1
-    if minute == 60:
+    if minute >= 60:
         minute = 0
         deg += 1
     return f"{deg:02d}° {minute:02d}' {sec:02d}\""
@@ -161,25 +164,7 @@ def build_kp_249_table() -> List[Dict]:
 KP_249_TABLE = build_kp_249_table()
 
 # ==========================================
-# PYDANTIC MODELS
-# ==========================================
-class NatalRequest(BaseModel):
-    dob: str
-    tob: str
-    lat: float
-    lon: float
-    tz: float = 5.5
-
-class HoraryRequest(BaseModel):
-    seed: int
-    query_date: Optional[str] = None
-    query_time: Optional[str] = None
-    lat: float = 30.9010
-    lon: float = 75.8573
-    tz: float = 5.5
-
-# ==========================================
-# 4-STEP SIGNIFICATORS
+# 4-STEP SIGNIFICATORS ENGINE
 # ==========================================
 def calculate_4step_significators(planets: Dict, cusps: Dict) -> Dict:
     house_occupants = {i: [] for i in range(1, 13)}
@@ -216,27 +201,55 @@ def calculate_4step_significators(planets: Dict, cusps: Dict) -> Dict:
     return significators
 
 # ==========================================
-# ROUTES
+# PYDANTIC REQUEST SCHEMAS
+# ==========================================
+class NatalRequest(BaseModel):
+    dob: str
+    tob: str
+    lat: float = 30.9010
+    lon: float = 75.8573
+    tz: float = 5.5
+    city: Optional[str] = "Ludhiana"
+
+class HoraryRequest(BaseModel):
+    seed: int
+    query_date: Optional[str] = None
+    query_time: Optional[str] = None
+    city: Optional[str] = "Ludhiana"
+    lat: float = 30.9010
+    lon: float = 75.8573
+    tz: float = 5.5
+
+# ==========================================
+# API ROUTES
 # ==========================================
 @app.get("/")
 def root():
-    return {"message": "KP Stellar Astrology Engine is live!", "docs": "/docs", "health": "/health"}
+    return {
+        "message": "KP Stellar Astrology Engine is live!",
+        "documentation": "/docs",
+        "health_check": "/health"
+    }
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "Swiss Ephemeris KP Engine"}
 
 @app.post("/kp/natal")
 def calculate_natal(req: NatalRequest):
     try:
-        dt = datetime.strptime(f"{req.dob} {req.tob}", "%d/%m/%Y %H:%M")
+        dt = date_parser.parse(f"{req.dob} {req.tob}", dayfirst=True)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid dob/tob. Use DD/MM/YYYY and HH:mm")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date/time format '{req.dob} {req.tob}'. Use DD/MM/YYYY and HH:mm."
+        )
 
-    utc_hours = dt.hour + (dt.minute / 60.0) - req.tz
+    utc_hours = dt.hour + (dt.minute / 60.0) + (dt.second / 3600.0) - req.tz
     jd_ut = swe.julday(dt.year, dt.month, dt.day, utc_hours)
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
 
+    # 12 Placidus Cusps
     cusp_data, _ = swe.houses_ex(jd_ut, req.lat, req.lon, b'P', swe.FLG_SIDEREAL)
     cusps = {}
     for i in range(1, 13):
@@ -252,6 +265,7 @@ def calculate_natal(req: NatalRequest):
             "sub_lord": coords["sub_lord"]
         }
 
+    # 9 Planetary Coordinates
     PLANET_MAP = [
         ("Sun", swe.SUN), ("Moon", swe.MOON), ("Mars", swe.MARS),
         ("Mercury", swe.MERCURY), ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
@@ -273,6 +287,7 @@ def calculate_natal(req: NatalRequest):
             "retrograde": res[3] < 0
         }
 
+    # Ketu (Mean Node opposite Rahu)
     ketu_lon = (planets["Rahu"]["longitude"] + 180.0) % 360.0
     k_coords = get_kp_coordinates(ketu_lon)
     planets["Ketu"] = {
@@ -291,7 +306,14 @@ def calculate_natal(req: NatalRequest):
     return {
         "status": 200,
         "calculation_type": "KP Natal",
-        "birth_details": {"dob": req.dob, "tob": req.tob, "lat": req.lat, "lon": req.lon},
+        "birth_details": {
+            "dob": dt.strftime("%d/%m/%Y"),
+            "tob": dt.strftime("%H:%M"),
+            "city": req.city,
+            "lat": req.lat,
+            "lon": req.lon,
+            "tz": req.tz
+        },
         "planets": planets,
         "houses": cusps,
         "four_step_significators": significators
@@ -302,30 +324,38 @@ def calculate_horary(req: HoraryRequest):
     if not (1 <= req.seed <= 249):
         raise HTTPException(status_code=400, detail="Horary Seed Number must be between 1 and 249.")
 
-    now = datetime.now()
-    # Gracefully ignore placeholder "string", null, or empty values from Swagger
-    q_date = req.query_date
-    if not q_date or q_date == "string" or not q_date.strip():
-        q_date = now.strftime("%d/%m/%Y")
+    # IST Fallback for current live requests
+    ist = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(ist)
 
-    q_time = req.query_time
-    if not q_time or q_time == "string" or not q_time.strip():
-        q_time = now.strftime("%H:%M")
+    raw_date = req.query_date
+    if not raw_date or str(raw_date).strip().lower() in ["string", "null", "none", ""]:
+        raw_date = now_ist.strftime("%d/%m/%Y")
+
+    raw_time = req.query_time
+    if not raw_time or str(raw_time).strip().lower() in ["string", "null", "none", ""]:
+        raw_time = now_ist.strftime("%H:%M")
 
     try:
-        dt = datetime.strptime(f"{q_date} {q_time}", "%d/%m/%Y %H:%M")
+        dt = date_parser.parse(f"{raw_date} {raw_time}", dayfirst=True)
     except Exception:
-        raise HTTPException(status_code=400, detail=f"Invalid date/time format '{q_date} {q_time}'. Use DD/MM/YYYY and HH:mm.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date/time format: '{raw_date} {raw_time}'. Use DD/MM/YYYY and HH:mm."
+        )
 
-    utc_hours = dt.hour + (dt.minute / 60.0) - req.tz
+    # Ephemeris Julian Day
+    utc_hours = dt.hour + (dt.minute / 60.0) + (dt.second / 3600.0) - req.tz
     jd_ut = swe.julday(dt.year, dt.month, dt.day, utc_hours)
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
     ayanamsa = swe.get_ayanamsa_ut(jd_ut)
 
+    # Ascendant from Horary Seed (1 to 249)
     seed_entry = KP_249_TABLE[req.seed - 1]
     asc_sidereal = seed_entry["start_lon"]
     asc_tropical = (asc_sidereal + ayanamsa) % 360.0
 
+    # Derive RAMC for Seed Ascendant at Location
     eps_res, _ = swe.calc_ut(jd_ut, swe.ECL_NUT, 0)
     eps = eps_res[0]
 
@@ -339,6 +369,7 @@ def calculate_horary(req: HoraryRequest):
     ad = deg(math.asin(sin_ad))
     armc = (ra - ad - 90.0) % 360.0
 
+    # Placidus Houses from ARMC
     cusps_trop, _ = swe.houses_armc(armc, req.lat, eps, b'P')
     cusps = {}
     for i in range(1, 13):
@@ -357,6 +388,7 @@ def calculate_horary(req: HoraryRequest):
             "sub_lord": coords["sub_lord"]
         }
 
+    # Planetary Coordinates at the Specified Query Moment
     PLANET_MAP = [
         ("Sun", swe.SUN), ("Moon", swe.MOON), ("Mars", swe.MARS),
         ("Mercury", swe.MERCURY), ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
@@ -397,7 +429,14 @@ def calculate_horary(req: HoraryRequest):
         "status": 200,
         "calculation_type": "KP Horary (1-249)",
         "seed_number": req.seed,
-        "query_details": {"date": q_date, "time": q_time, "lat": req.lat, "lon": req.lon},
+        "query_details": {
+            "date": dt.strftime("%d/%m/%Y"),
+            "time": dt.strftime("%H:%M"),
+            "city": req.city,
+            "lat": req.lat,
+            "lon": req.lon,
+            "tz": req.tz
+        },
         "planets": planets,
         "houses": cusps,
         "four_step_significators": significators

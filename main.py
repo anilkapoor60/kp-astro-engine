@@ -11,7 +11,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Set KP New Ayanamsha (Krishnamurti)
 swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
 
 # ==========================================
@@ -42,7 +41,7 @@ TOTAL_YEARS = 120.0
 NAKSHATRA_SPAN = 800.0  # 13°20' in arcminutes
 
 # ==========================================
-# MATHEMATICAL HELPER FUNCTIONS
+# MATHEMATICAL HELPERS
 # ==========================================
 def to_dms(degrees: float) -> str:
     """Converts decimal degrees to clean DD° MM' SS\" string."""
@@ -58,8 +57,14 @@ def to_dms(degrees: float) -> str:
         deg += 1
     return f"{deg:02d}° {minute:02d}' {sec:02d}\""
 
+def get_cusp_degree(cusp_tuple, house_num: int) -> float:
+    """Safely retrieves cusp whether tuple has 12 items (pyswisseph) or 13 items."""
+    if len(cusp_tuple) == 12:
+        return cusp_tuple[house_num - 1]
+    return cusp_tuple[house_num]
+
 def get_kp_coordinates(lon: float) -> Dict:
-    """Calculates Sign, Sign Lord, Star, Star Lord, and Sub-Lord for any longitude."""
+    """Calculates Sign, Sign Lord, Star, Star Lord, Sub-Lord, and Sub-Sub-Lord."""
     lon = lon % 360.0
     sign_idx = int(lon // 30.0)
     sign_name, sign_lord = ZODIAC_SIGNS[sign_idx]
@@ -70,7 +75,6 @@ def get_kp_coordinates(lon: float) -> Dict:
     nak_start = nak_idx * (360.0 / 27.0)
     deg_in_nak_mins = (lon - nak_start) * 60.0
 
-    # Calculate Sub-Lord
     start_lord_idx = DASHA_LORDS.index(star_lord)
     accum_mins = 0.0
     sub_lord = star_lord
@@ -81,7 +85,6 @@ def get_kp_coordinates(lon: float) -> Dict:
         span_mins = (DASHA_YEARS[(start_lord_idx + i) % 9] / TOTAL_YEARS) * NAKSHATRA_SPAN
         if accum_mins <= deg_in_nak_mins < (accum_mins + span_mins):
             sub_lord = curr_lord
-            # Sub-Sub Lord
             deg_in_sub_mins = deg_in_nak_mins - accum_mins
             sub_start_idx = DASHA_LORDS.index(sub_lord)
             accum_ss_mins = 0.0
@@ -110,7 +113,6 @@ def get_kp_coordinates(lon: float) -> Dict:
 # KP 249 HORARY TABLE GENERATOR
 # ==========================================
 def build_kp_249_table() -> List[Dict]:
-    """Generates the authoritative 249 Sub table of Prof. K.S. Krishnamurti."""
     table = []
     curr_lon = 0.0
     for nak_idx, (nak_name, star_lord) in enumerate(NAKSHATRAS):
@@ -120,13 +122,11 @@ def build_kp_249_table() -> List[Dict]:
             sub_span_deg = ((DASHA_YEARS[(start_lord_idx + i) % 9] / TOTAL_YEARS) * NAKSHATRA_SPAN) / 60.0
             end_lon = curr_lon + sub_span_deg
 
-            # Check if sub crosses a 30-degree sign boundary
             curr_sign_idx = int(curr_lon // 30.0)
             end_sign_idx = int(end_lon // 30.0)
 
             if curr_sign_idx != end_sign_idx and end_lon < 360.0:
                 split_boundary = end_sign_idx * 30.0
-                # Part 1
                 table.append({
                     "seed": len(table) + 1,
                     "start_lon": curr_lon,
@@ -136,7 +136,6 @@ def build_kp_249_table() -> List[Dict]:
                     "star_lord": star_lord,
                     "sub_lord": sub_lord
                 })
-                # Part 2
                 table.append({
                     "seed": len(table) + 1,
                     "start_lon": split_boundary,
@@ -162,35 +161,27 @@ def build_kp_249_table() -> List[Dict]:
 KP_249_TABLE = build_kp_249_table()
 
 # ==========================================
-# PYDANTIC SCHEMAS
+# PYDANTIC MODELS
 # ==========================================
 class NatalRequest(BaseModel):
-    dob: str          # DD/MM/YYYY
-    tob: str          # HH:mm
+    dob: str
+    tob: str
     lat: float
     lon: float
     tz: float = 5.5
 
 class HoraryRequest(BaseModel):
-    seed: int         # 1 to 249
-    query_date: Optional[str] = None  # DD/MM/YYYY (defaults to now)
-    query_time: Optional[str] = None  # HH:mm (defaults to now)
+    seed: int
+    query_date: Optional[str] = None
+    query_time: Optional[str] = None
     lat: float = 30.9010
     lon: float = 75.8573
     tz: float = 5.5
 
 # ==========================================
-# 4-STEP SIGNIFICATORS ENGINE
+# 4-STEP SIGNIFICATORS
 # ==========================================
-def calculate_4step_significators(planets: Dict, cusps: List[Dict]) -> Dict:
-    """
-    Evaluates 4-Step Significators:
-    Level 1: Planet in the Star of an Occupant of House X
-    Level 2: Planet occupying House X
-    Level 3: Planet in the Star of the Lord of House X
-    Level 4: Lord of House X
-    """
-    # 1. Determine House Occupants
+def calculate_4step_significators(planets: Dict, cusps: Dict) -> Dict:
     house_occupants = {i: [] for i in range(1, 13)}
     for p_name, p_data in planets.items():
         p_lon = p_data["longitude"]
@@ -201,26 +192,18 @@ def calculate_4step_significators(planets: Dict, cusps: List[Dict]) -> Dict:
                 if c_start <= p_lon < c_end:
                     house_occupants[i].append(p_name)
                     break
-            else:  # Spans across 360/0 boundary
+            else:
                 if p_lon >= c_start or p_lon < c_end:
                     house_occupants[i].append(p_name)
                     break
 
-    # 2. House Lords
     house_lords = {i: cusps[i]["sign_lord"] for i in range(1, 13)}
-
-    # 3. Calculate Significators per Planet
     significators = {}
     for p_name, p_data in planets.items():
         star_lord = p_data["star_lord"]
-        
-        # Level 1: Houses whose occupants have this planet's star lord
         l1 = [h for h, occs in house_occupants.items() if star_lord in occs]
-        # Level 2: Houses occupied by this planet
         l2 = [h for h, occs in house_occupants.items() if p_name in occs]
-        # Level 3: Houses whose lord is this planet's star lord
         l3 = [h for h, lord in house_lords.items() if lord == star_lord]
-        # Level 4: Houses owned by this planet
         l4 = [h for h, lord in house_lords.items() if lord == p_name]
 
         significators[p_name] = {
@@ -233,27 +216,35 @@ def calculate_4step_significators(planets: Dict, cusps: List[Dict]) -> Dict:
     return significators
 
 # ==========================================
-# ENDPOINT 1: NATAL KP CALCULATION
+# ROUTES
 # ==========================================
+@app.get("/")
+def root():
+    return {"message": "KP Stellar Astrology Engine is live!", "docs": "/docs", "health": "/health"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.post("/kp/natal")
 def calculate_natal(req: NatalRequest):
     try:
         dt = datetime.strptime(f"{req.dob} {req.tob}", "%d/%m/%Y %H:%M")
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid Date/Time format. Use DD/MM/YYYY and HH:mm")
+        raise HTTPException(status_code=400, detail="Invalid dob/tob. Use DD/MM/YYYY and HH:mm")
 
     utc_hours = dt.hour + (dt.minute / 60.0) - req.tz
     jd_ut = swe.julday(dt.year, dt.month, dt.day, utc_hours)
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
 
-    # 1. 12 House Cusps
-    cusp_data, ascmc = swe.houses_ex(jd_ut, req.lat, req.lon, b'P', swe.FLG_SIDEREAL)
+    cusp_data, _ = swe.houses_ex(jd_ut, req.lat, req.lon, b'P', swe.FLG_SIDEREAL)
     cusps = {}
     for i in range(1, 13):
-        coords = get_kp_coordinates(cusp_data[i])
+        deg_sid = get_cusp_degree(cusp_data, i)
+        coords = get_kp_coordinates(deg_sid)
         cusps[i] = {
             "house": i,
-            "longitude": round(cusp_data[i], 4),
+            "longitude": round(deg_sid, 4),
             "sign": coords["sign"],
             "degree": coords["degree_in_sign"],
             "sign_lord": coords["sign_lord"],
@@ -261,110 +252,6 @@ def calculate_natal(req: NatalRequest):
             "sub_lord": coords["sub_lord"]
         }
 
-    # 2. 9 Grahas
-    PLANET_MAP = [
-        ("Sun", swe.SUN), ("Moon", swe.MOON), ("Mars", swe.MARS),
-        ("Mercury", swe.MERCURY), ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
-        ("Saturn", swe.SATURN), ("Rahu", swe.MEAN_NODE)
-    ]
-    planets = {}
-    for name, pid in PLANET_MAP:
-        res, flg = swe.calc_ut(jd_ut, pid, swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED)
-        lon = res[0]
-        coords = get_kp_coordinates(lon)
-        planets[name] = {
-            "longitude": round(lon, 4),
-            "sign": coords["sign"],
-            "degree": coords["degree_in_sign"],
-            "sign_lord": coords["sign_lord"],
-            "star_lord": coords["star_lord"],
-            "sub_lord": coords["sub_lord"],
-            "sub_sub_lord": coords["sub_sub_lord"],
-            "retrograde": res[3] < 0
-        }
-
-    # Ketu is opposite Rahu
-    ketu_lon = (planets["Rahu"]["longitude"] + 180.0) % 360.0
-    k_coords = get_kp_coordinates(ketu_lon)
-    planets["Ketu"] = {
-        "longitude": round(ketu_lon, 4),
-        "sign": k_coords["sign"],
-        "degree": k_coords["degree_in_sign"],
-        "sign_lord": k_coords["sign_lord"],
-        "star_lord": k_coords["star_lord"],
-        "sub_lord": k_coords["sub_lord"],
-        "sub_sub_lord": k_coords["sub_sub_lord"],
-        "retrograde": True
-    }
-
-    # 3. Pre-calculated 4-Step Significators
-    significators = calculate_4step_significators(planets, cusps)
-
-    return {
-        "status": 200,
-        "calculation_type": "KP Natal",
-        "birth_details": {"dob": req.dob, "tob": req.tob, "lat": req.lat, "lon": req.lon},
-        "planets": planets,
-        "houses": cusps,
-        "four_step_significators": significators
-    }
-
-# ==========================================
-# ENDPOINT 2: KP HORARY (1-249 PRASHNA)
-# ==========================================
-@app.post("/kp/horary")
-def calculate_horary(req: HoraryRequest):
-    if not (1 <= req.seed <= 249):
-        raise HTTPException(status_code=400, detail="Horary Seed Number must be between 1 and 249.")
-
-    now = datetime.now()
-    q_date = req.query_date or now.strftime("%d/%m/%Y")
-    q_time = req.query_time or now.strftime("%H:%M")
-    dt = datetime.strptime(f"{q_date} {q_time}", "%d/%m/%Y %H:%M")
-
-    utc_hours = dt.hour + (dt.minute / 60.0) - req.tz
-    jd_ut = swe.julday(dt.year, dt.month, dt.day, utc_hours)
-    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
-    ayanamsa = swe.get_ayanamsa_ut(jd_ut)
-
-    # 1. Lookup Ascendant from Seed
-    seed_entry = KP_249_TABLE[req.seed - 1]
-    asc_sidereal = seed_entry["start_lon"]
-    asc_tropical = (asc_sidereal + ayanamsa) % 360.0
-
-    # 2. Derive RAMC for Seed Ascendant at Query Location
-    eps_res, _ = swe.calc_ut(jd_ut, swe.ECL_NUT, 0)
-    eps = eps_res[0]
-
-    rad = math.radians
-    deg = math.degrees
-    sin_d = math.sin(rad(eps)) * math.sin(rad(asc_tropical))
-    decl = math.asin(sin_d)
-    ra = deg(math.atan2(math.cos(rad(eps)) * math.sin(rad(asc_tropical)), math.cos(rad(asc_tropical)))) % 360.0
-    sin_ad = math.tan(decl) * math.tan(rad(req.lat))
-    sin_ad = max(-1.0, min(1.0, sin_ad))
-    ad = deg(math.asin(sin_ad))
-    armc = (ra - ad - 90.0) % 360.0
-
-    # 3. Calculate Placidus Houses from ARMC
-    cusps_trop, _ = swe.houses_armc(armc, req.lat, eps, b'P')
-    cusps = {}
-    for i in range(1, 13):
-        sid_c = (cusps_trop[i] - ayanamsa) % 360.0
-        if i == 1:
-            sid_c = asc_sidereal  # Exactly locked to the seed degree
-        coords = get_kp_coordinates(sid_c)
-        cusps[i] = {
-            "house": i,
-            "longitude": round(sid_c, 4),
-            "sign": coords["sign"],
-            "degree": coords["degree_in_sign"],
-            "sign_lord": coords["sign_lord"],
-            "star_lord": coords["star_lord"],
-            "sub_lord": coords["sub_lord"]
-        }
-
-    # 4. Calculate Transit Planets at Query Moment
     PLANET_MAP = [
         ("Sun", swe.SUN), ("Moon", swe.MOON), ("Mars", swe.MARS),
         ("Mercury", swe.MERCURY), ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
@@ -399,7 +286,111 @@ def calculate_horary(req: HoraryRequest):
         "retrograde": True
     }
 
-    # 5. Significators
+    significators = calculate_4step_significators(planets, cusps)
+
+    return {
+        "status": 200,
+        "calculation_type": "KP Natal",
+        "birth_details": {"dob": req.dob, "tob": req.tob, "lat": req.lat, "lon": req.lon},
+        "planets": planets,
+        "houses": cusps,
+        "four_step_significators": significators
+    }
+
+@app.post("/kp/horary")
+def calculate_horary(req: HoraryRequest):
+    if not (1 <= req.seed <= 249):
+        raise HTTPException(status_code=400, detail="Horary Seed Number must be between 1 and 249.")
+
+    now = datetime.now()
+    # Gracefully ignore placeholder "string", null, or empty values from Swagger
+    q_date = req.query_date
+    if not q_date or q_date == "string" or not q_date.strip():
+        q_date = now.strftime("%d/%m/%Y")
+
+    q_time = req.query_time
+    if not q_time or q_time == "string" or not q_time.strip():
+        q_time = now.strftime("%H:%M")
+
+    try:
+        dt = datetime.strptime(f"{q_date} {q_time}", "%d/%m/%Y %H:%M")
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid date/time format '{q_date} {q_time}'. Use DD/MM/YYYY and HH:mm.")
+
+    utc_hours = dt.hour + (dt.minute / 60.0) - req.tz
+    jd_ut = swe.julday(dt.year, dt.month, dt.day, utc_hours)
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
+    ayanamsa = swe.get_ayanamsa_ut(jd_ut)
+
+    seed_entry = KP_249_TABLE[req.seed - 1]
+    asc_sidereal = seed_entry["start_lon"]
+    asc_tropical = (asc_sidereal + ayanamsa) % 360.0
+
+    eps_res, _ = swe.calc_ut(jd_ut, swe.ECL_NUT, 0)
+    eps = eps_res[0]
+
+    rad = math.radians
+    deg = math.degrees
+    sin_d = math.sin(rad(eps)) * math.sin(rad(asc_tropical))
+    decl = math.asin(sin_d)
+    ra = deg(math.atan2(math.cos(rad(eps)) * math.sin(rad(asc_tropical)), math.cos(rad(asc_tropical)))) % 360.0
+    sin_ad = math.tan(decl) * math.tan(rad(req.lat))
+    sin_ad = max(-1.0, min(1.0, sin_ad))
+    ad = deg(math.asin(sin_ad))
+    armc = (ra - ad - 90.0) % 360.0
+
+    cusps_trop, _ = swe.houses_armc(armc, req.lat, eps, b'P')
+    cusps = {}
+    for i in range(1, 13):
+        deg_trop = get_cusp_degree(cusps_trop, i)
+        sid_c = (deg_trop - ayanamsa) % 360.0
+        if i == 1:
+            sid_c = asc_sidereal
+        coords = get_kp_coordinates(sid_c)
+        cusps[i] = {
+            "house": i,
+            "longitude": round(sid_c, 4),
+            "sign": coords["sign"],
+            "degree": coords["degree_in_sign"],
+            "sign_lord": coords["sign_lord"],
+            "star_lord": coords["star_lord"],
+            "sub_lord": coords["sub_lord"]
+        }
+
+    PLANET_MAP = [
+        ("Sun", swe.SUN), ("Moon", swe.MOON), ("Mars", swe.MARS),
+        ("Mercury", swe.MERCURY), ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
+        ("Saturn", swe.SATURN), ("Rahu", swe.MEAN_NODE)
+    ]
+    planets = {}
+    for name, pid in PLANET_MAP:
+        res, _ = swe.calc_ut(jd_ut, pid, swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED)
+        lon = res[0]
+        coords = get_kp_coordinates(lon)
+        planets[name] = {
+            "longitude": round(lon, 4),
+            "sign": coords["sign"],
+            "degree": coords["degree_in_sign"],
+            "sign_lord": coords["sign_lord"],
+            "star_lord": coords["star_lord"],
+            "sub_lord": coords["sub_lord"],
+            "sub_sub_lord": coords["sub_sub_lord"],
+            "retrograde": res[3] < 0
+        }
+
+    ketu_lon = (planets["Rahu"]["longitude"] + 180.0) % 360.0
+    k_coords = get_kp_coordinates(ketu_lon)
+    planets["Ketu"] = {
+        "longitude": round(ketu_lon, 4),
+        "sign": k_coords["sign"],
+        "degree": k_coords["degree_in_sign"],
+        "sign_lord": k_coords["sign_lord"],
+        "star_lord": k_coords["star_lord"],
+        "sub_lord": k_coords["sub_lord"],
+        "sub_sub_lord": k_coords["sub_sub_lord"],
+        "retrograde": True
+    }
+
     significators = calculate_4step_significators(planets, cusps)
 
     return {
@@ -411,7 +402,3 @@ def calculate_horary(req: HoraryRequest):
         "houses": cusps,
         "four_step_significators": significators
     }
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "Swiss Ephemeris KP Engine"}

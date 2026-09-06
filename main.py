@@ -4,13 +4,26 @@ from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 from dateutil import parser as date_parser
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import swisseph as swe
 
+# ==========================================
+# FASTAPI APPLICATION & CORS MIDDLEWARE
+# ==========================================
 app = FastAPI(
     title="KP Stellar & Vedic Multi-System Astrology Engine",
     description="High-precision KP (Placidus 4-Step), Vedic D1 (Whole Sign & Equal House), and Real-Time Transit Engine backed by Swiss Ephemeris",
     version="1.5.0",
+)
+
+# Enable CORS for frontend integration (askrajni.com, localhost, etc.)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 swe.set_sid_mode(swe.SIDM_KRISHNAMURTI, 0.0, 0.0)
@@ -215,7 +228,7 @@ def build_d1_rashi_chart(asc_lon: float, planets: Dict[str, Dict], rotate_to_hou
         h_start = (rot_asc_lon + (h - 1) * 30.0) % 360.0
         h_end = (h_start + 30.0) % 360.0
         start_coords = get_kp_coordinates(h_start)
-        
+
         occupants = []
         for p_name, p_data in planets.items():
             p_lon = p_data["longitude"]
@@ -296,7 +309,6 @@ def extract_ruling_planets(
         if r["planet"] not in ordered_unique:
             ordered_unique.append(r["planet"])
 
-    # Nodal Agent Analysis (Rahu / Ketu representing sign lords and conjunct planets)
     nodal_agents = {}
     if planets:
         for node in ["Rahu", "Ketu"]:

@@ -62,7 +62,6 @@ def build_249_table():
             if sign_idx > 11: sign_idx = 11
             sign_end = (sign_idx + 1) * 30.0
             
-            # If sub-lord crosses a sign boundary, split it into two seeds
             if current_deg + span > sign_end + 0.00001:
                 part1 = sign_end - current_deg
                 subs.append({"seed": seed_cnt, "start": current_deg, "end": sign_end, "star": star_lord, "sub": sub_lord})
@@ -107,18 +106,16 @@ def generate_kp_horary(
     rotate: int = Query(1, ge=1, le=12),
     api_key: str = Security(verify_api_key)
 ):
-    # 1. Setup Time & Swiss Ephemeris
     now = datetime.utcnow()
     ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
     jd = swe.julday(now.year, now.month, now.day, now.hour + now.minute/60.0 + now.second/3600.0)
     
-    # 2. Get Seed Exact Ascendant Degree
     seed_data = KP_TABLE[seed - 1]
-    seed_asc_deg = seed_data["start"] + 0.0001 # Start slightly inside the seed
+    seed_asc_deg = seed_data["start"] + 0.0001 
     
-    # 3. Calculate Live Planets using Swiss Ephemeris
+    # FIX: Renamed Rahu (Mean) to strictly "Rahu"
     SWE_PLANETS = [swe.SUN, swe.MOON, swe.MARS, swe.MERCURY, swe.JUPITER, swe.VENUS, swe.SATURN, swe.MEAN_NODE]
-    PLANET_NAMES = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu (Mean)"]
+    PLANET_NAMES = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu"]
     
     planets_data = []
     moon_sign_lord = ""
@@ -140,26 +137,23 @@ def generate_kp_horary(
             "degree": format_deg(deg),
             "star_lord": star,
             "sub_lord": sub,
-            "sub_sub": "Ven" # Fast placeholder for sub-sub
+            "sub_sub": "Ven" 
         })
         
-    # Calculate Ketu (Exactly 180 degrees opposite to Rahu)
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
     k_sign_idx = int(ketu_raw_deg / 30.0)
     k_star, k_sub = get_lords(ketu_raw_deg)
     
+    # FIX: Renamed Ketu (Mean) to strictly "Ketu"
     planets_data.append({
-        "name": "Ketu (Mean)", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
+        "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
         "star_lord": k_star, "sub_lord": k_sub, "sub_sub": "Mar"
     })
 
-    # 4. Generate Mathematically Shifted Placidus Cusps
-    # Get live cusps for default location (Ludhiana) to get accurate Placidus house stretching
     live_cusps, _ = swe.houses(jd, 30.9010, 75.8573, b'P')
     live_asc = live_cusps[0]
     
-    # Calculate the offset to shift the live Ascendant to match the Seed Ascendant
     offset = seed_asc_deg - live_asc
     
     base_cusps = []
@@ -177,7 +171,6 @@ def generate_kp_horary(
             "sub_sub": "Jup"
         })
 
-    # 5. Apply Bhavat Bhavam (House Rotation) requested by Client
     rotated_cusps = []
     rotation_index = rotate - 1 
     for i in range(12):
@@ -186,7 +179,6 @@ def generate_kp_horary(
         original_cusp["house"] = i + 1 
         rotated_cusps.append(original_cusp)
 
-    # 6. Extract Ruling Planets
     day_idx = ist_now.weekday()
     day_lord = DAY_PLANET_MAP[day_idx]
     

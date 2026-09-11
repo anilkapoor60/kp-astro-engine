@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Query
+import os
+from fastapi import FastAPI, Query, Security, HTTPException, status
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import pytz
@@ -16,7 +18,27 @@ app.add_middleware(
 )
 
 # ==========================================
-# 1. HEALTH CHECK (KEEPS RENDER AWAKE)
+# 1. SECURITY & API KEY MANAGEMENT
+# ==========================================
+API_KEY_NAME = "x-api-key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# This is your master vault. You can add new keys here if you want to sell access to your API later!
+VALID_API_KEYS = {
+    os.environ.get("MASTER_API_KEY", "askrajni_master_secret_999"): "AskRajni Node Backend",
+    "demo_client_key_001": "External Client 1 (Example)"
+}
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    if api_key in VALID_API_KEYS:
+        return api_key
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, 
+        detail="Access Denied: Invalid or missing API Key. Please contact askrajnioffice@gmail.com to request API access."
+    )
+
+# ==========================================
+# 2. PUBLIC HEALTH CHECK (KEEPS RENDER AWAKE)
 # ==========================================
 @app.get("/health")
 def health_check():
@@ -27,24 +49,22 @@ def root():
     return {"message": "AskRajni KP Engine API is running. Visit /docs for the manual."}
 
 # ==========================================
-# 2. THE MASTER HORARY (PRASHNA) GENERATOR
+# 3. THE SECURED HORARY (PRASHNA) GENERATOR
 # ==========================================
+# Notice the new 'api_key' dependency injected into the route!
 @app.get("/api/horary")
 def generate_kp_horary(
     seed: int = Query(..., ge=1, le=249, description="KP Horary Seed (1-249)"),
-    rotate: int = Query(1, ge=1, le=12, description="Target House to Rotate to Ascendant")
+    rotate: int = Query(1, ge=1, le=12, description="Target House to Rotate to Ascendant"),
+    api_key: str = Security(verify_api_key)
 ):
     # Set time to current IST for live Prashna transit positions
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     
     # ---------------------------------------------------------
-    # MOCK/PLACEHOLDER MATH (To ensure 100% uptime for Node.js)
+    # MOCK/PLACEHOLDER MATH
     # ---------------------------------------------------------
-    # Note: Full 1-249 KP Ayanamsa mathematical mapping goes here. 
-    # For now, we generate a flawless JSON structure so the AI Drafter 
-    # and PDF Generator on the Node.js side work perfectly.
-    
     planets_data = [
         {"name": "Sun", "sign": "Leo", "degree": "24°18'", "star_lord": "Ven", "sub_lord": "Mer", "sub_sub": "Jup"},
         {"name": "Moon", "sign": "Cancer", "degree": "12°44'", "star_lord": "Sat", "sub_lord": "Mar", "sub_sub": "Ven"},
@@ -75,28 +95,19 @@ def generate_kp_horary(
     # ---------------------------------------------------------
     # BHAVAT BHAVAM: MATHEMATICAL CHART ROTATION
     # ---------------------------------------------------------
-    # If a user selects House 7 (Spouse), House 7 becomes House 1.
     rotated_cusps = []
-    rotation_index = rotate - 1  # Arrays are 0-indexed
+    rotation_index = rotate - 1 
     
     for i in range(12):
-        # Calculate the new index, wrapping around 12 using modulo
         target_index = (rotation_index + i) % 12
         original_cusp = base_cusps[target_index].copy()
-        
-        # Renumber the house logically (1 to 12)
         original_cusp["house"] = i + 1 
         rotated_cusps.append(original_cusp)
 
     ruling_planets_data = {
-        "day_lord": "Mars", 
-        "asc_sign_lord": "Mercury", 
-        "asc_star_lord": "Rahu",
-        "asc_sub_lord": "Jupiter", 
-        "moon_sign_lord": "Sun", 
-        "moon_star_lord": "Venus",
-        "rahu_represents": "Mercury & Jupiter (Mean)", 
-        "ketu_represents": "Mars & Venus (Mean)"
+        "day_lord": "Mars", "asc_sign_lord": "Mercury", "asc_star_lord": "Rahu",
+        "asc_sub_lord": "Jupiter", "moon_sign_lord": "Sun", "moon_star_lord": "Venus",
+        "rahu_represents": "Mercury & Jupiter (Mean)", "ketu_represents": "Mars & Venus (Mean)"
     }
 
     return {
@@ -107,7 +118,6 @@ def generate_kp_horary(
         "ruling_planets": ruling_planets_data
     }
 
-# Entry point for local testing
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

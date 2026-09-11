@@ -1,14 +1,14 @@
 import os
+import math
+from datetime import datetime
+import pytz
 from fastapi import FastAPI, Query, Security, HTTPException, status
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime
-import pytz
 import swisseph as swe
 
 app = FastAPI(title="AskRajni KP Astro Engine")
 
-# Allow Node.js backend to communicate with this Python engine
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,10 +23,8 @@ app.add_middleware(
 API_KEY_NAME = "x-api-key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-# This is your master vault. You can add new keys here if you want to sell access to your API later!
 VALID_API_KEYS = {
-    os.environ.get("MASTER_API_KEY", "askrajni_master_secret_999"): "AskRajni Node Backend",
-    "demo_client_key_001": "External Client 1 (Example)"
+    os.environ.get("MASTER_API_KEY", "askrajni_master_secret_999"): "AskRajni Node Backend"
 }
 
 async def verify_api_key(api_key: str = Security(api_key_header)):
@@ -34,80 +32,173 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
         return api_key
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN, 
-        detail="Access Denied: Invalid or missing API Key. Please contact askrajnioffice@gmail.com to request API access."
+        detail="Access Denied: Invalid API Key."
     )
 
 # ==========================================
-# 2. PUBLIC HEALTH CHECK (KEEPS RENDER AWAKE)
+# 2. KP ASTROLOGY CONSTANTS & 249 GENERATOR
 # ==========================================
+SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+SIGN_LORDS = ["Mars", "Venus", "Mercury", "Moon", "Sun", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Saturn", "Jupiter"]
+DASHA_SEQ = [("Ketu", 7), ("Venus", 20), ("Sun", 6), ("Moon", 10), ("Mars", 7), ("Rahu", 18), ("Jupiter", 16), ("Saturn", 19), ("Mercury", 17)]
+DAY_LORDS_PLANET = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAY_PLANET_MAP = ["Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Sun"]
+
+def build_249_table():
+    subs = []
+    current_deg = 0.0
+    seed_cnt = 1
+    
+    for nak in range(27):
+        star_idx = nak % 9
+        star_lord = DASHA_SEQ[star_idx][0]
+        
+        for i in range(9):
+            sub_idx = (star_idx + i) % 9
+            sub_lord, years = DASHA_SEQ[sub_idx]
+            span = (years / 120.0) * (40.0 / 3.0) # 13.333333 degrees per nakshatra
+            
+            sign_idx = int(current_deg / 30.0)
+            if sign_idx > 11: sign_idx = 11
+            sign_end = (sign_idx + 1) * 30.0
+            
+            # If sub-lord crosses a sign boundary, split it into two seeds
+            if current_deg + span > sign_end + 0.00001:
+                part1 = sign_end - current_deg
+                subs.append({"seed": seed_cnt, "start": current_deg, "end": sign_end, "star": star_lord, "sub": sub_lord})
+                seed_cnt += 1
+                current_deg = sign_end
+                
+                part2 = span - part1
+                subs.append({"seed": seed_cnt, "start": current_deg, "end": current_deg + part2, "star": star_lord, "sub": sub_lord})
+                seed_cnt += 1
+                current_deg += part2
+            else:
+                subs.append({"seed": seed_cnt, "start": current_deg, "end": current_deg + span, "star": star_lord, "sub": sub_lord})
+                seed_cnt += 1
+                current_deg += span
+    return subs
+
+# Generate the massive 249 memory table on server startup
+KP_TABLE = build_249_table()
+
+def get_lords(deg):
+    deg = deg % 360
+    for s in KP_TABLE:
+        if s["start"] <= deg <= s["end"] + 0.00001:
+            return s["star"], s["sub"]
+    return "Ketu", "Ketu"
+    
+def format_deg(deg):
+    d = int(deg) % 30
+    m = int((deg - int(deg)) * 60)
+    return f"{d:02d}°{m:02d}'"
+
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "Swiss Ephemeris Engine is Awake"}
-
-@app.get("/")
-def root():
-    return {"message": "AskRajni KP Engine API is running. Visit /docs for the manual."}
+    return {"status": "ok", "message": "Swiss Ephemeris 249-Engine Awake"}
 
 # ==========================================
-# 3. THE SECURED HORARY (PRASHNA) GENERATOR
+# 3. LIVE HORARY ENGINE (REAL SWISS EPHEMERIS)
 # ==========================================
-# Notice the new 'api_key' dependency injected into the route!
 @app.get("/api/horary")
 def generate_kp_horary(
-    seed: int = Query(..., ge=1, le=249, description="KP Horary Seed (1-249)"),
-    rotate: int = Query(1, ge=1, le=12, description="Target House to Rotate to Ascendant"),
+    seed: int = Query(..., ge=1, le=249),
+    rotate: int = Query(1, ge=1, le=12),
     api_key: str = Security(verify_api_key)
 ):
-    # Set time to current IST for live Prashna transit positions
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
+    # 1. Setup Time & Swiss Ephemeris
+    now = datetime.utcnow()
+    ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
+    jd = swe.julday(now.year, now.month, now.day, now.hour + now.minute/60.0 + now.second/3600.0)
     
-    # ---------------------------------------------------------
-    # MOCK/PLACEHOLDER MATH
-    # ---------------------------------------------------------
-    planets_data = [
-        {"name": "Sun", "sign": "Leo", "degree": "24°18'", "star_lord": "Ven", "sub_lord": "Mer", "sub_sub": "Jup"},
-        {"name": "Moon", "sign": "Cancer", "degree": "12°44'", "star_lord": "Sat", "sub_lord": "Mar", "sub_sub": "Ven"},
-        {"name": "Mars", "sign": "Gemini", "degree": "05°11'", "star_lord": "Mar", "sub_lord": "Sun", "sub_sub": "Sat"},
-        {"name": "Mercury", "sign": "Virgo", "degree": "18°02'", "star_lord": "Moon", "sub_lord": "Rahu", "sub_sub": "Mer"},
-        {"name": "Jupiter", "sign": "Taurus", "degree": "21°39'", "star_lord": "Moon", "sub_lord": "Ven", "sub_sub": "Sun"},
-        {"name": "Venus", "sign": "Libra", "degree": "07°55'", "star_lord": "Rahu", "sub_lord": "Rahu", "sub_sub": "Mar"},
-        {"name": "Saturn (R)", "sign": "Aquarius", "degree": "19°31'", "star_lord": "Rahu", "sub_lord": "Mar", "sub_sub": "Jup"},
-        {"name": "Rahu (Mean)", "sign": "Pisces", "degree": "14°08'", "star_lord": "Sat", "sub_lord": "Rahu", "sub_sub": "Ven"},
-        {"name": "Ketu (Mean)", "sign": "Virgo", "degree": "14°08'", "star_lord": "Moon", "sub_lord": "Jup", "sub_sub": "Sat"}
-    ]
+    # 2. Get Seed Exact Ascendant Degree
+    seed_data = KP_TABLE[seed - 1]
+    seed_asc_deg = seed_data["start"] + 0.0001 # Start slightly inside the seed
+    
+    # 3. Calculate Live Planets using Swiss Ephemeris
+    SWE_PLANETS = [swe.SUN, swe.MOON, swe.MARS, swe.MERCURY, swe.JUPITER, swe.VENUS, swe.SATURN, swe.MEAN_NODE]
+    PLANET_NAMES = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu (Mean)"]
+    
+    planets_data = []
+    moon_sign_lord = ""
+    moon_star_lord = ""
+    
+    for i, p in enumerate(SWE_PLANETS):
+        pos, _ = swe.calc_ut(jd, p)
+        deg = pos[0]
+        sign_idx = int(deg / 30.0)
+        star, sub = get_lords(deg)
+        
+        if PLANET_NAMES[i] == "Moon":
+            moon_sign_lord = SIGN_LORDS[sign_idx]
+            moon_star_lord = star
 
-    base_cusps = [
-        {"house": 1, "sign": "Aries", "degree": "15°00'", "star_lord": "Ven", "sub_lord": "Mer", "sub_sub": "Jup"},
-        {"house": 2, "sign": "Taurus", "degree": "15°00'", "star_lord": "Sun", "sub_lord": "Ven", "sub_sub": "Sat"},
-        {"house": 3, "sign": "Gemini", "degree": "15°00'", "star_lord": "Moon", "sub_lord": "Mar", "sub_sub": "Rahu"},
-        {"house": 4, "sign": "Cancer", "degree": "15°00'", "star_lord": "Mar", "sub_lord": "Jup", "sub_sub": "Mer"},
-        {"house": 5, "sign": "Leo", "degree": "15°00'", "star_lord": "Rahu", "sub_lord": "Sat", "sub_sub": "Ven"},
-        {"house": 6, "sign": "Virgo", "degree": "15°00'", "star_lord": "Jup", "sub_lord": "Mer", "sub_sub": "Sun"},
-        {"house": 7, "sign": "Libra", "degree": "15°00'", "star_lord": "Sat", "sub_lord": "Ven", "sub_sub": "Mar"},
-        {"house": 8, "sign": "Scorpio", "degree": "15°00'", "star_lord": "Mer", "sub_lord": "Mar", "sub_sub": "Jup"},
-        {"house": 9, "sign": "Sagittarius", "degree": "15°00'", "star_lord": "Ketu", "sub_lord": "Jup", "sub_sub": "Sat"},
-        {"house": 10, "sign": "Capricorn", "degree": "15°00'", "star_lord": "Ven", "sub_lord": "Sat", "sub_sub": "Rahu"},
-        {"house": 11, "sign": "Aquarius", "degree": "15°00'", "star_lord": "Sun", "sub_lord": "Sat", "sub_sub": "Mer"},
-        {"house": 12, "sign": "Pisces", "degree": "15°00'", "star_lord": "Moon", "sub_lord": "Jup", "sub_sub": "Ven"}
-    ]
+        planets_data.append({
+            "name": PLANET_NAMES[i],
+            "sign": SIGNS[sign_idx],
+            "degree": format_deg(deg),
+            "star_lord": star,
+            "sub_lord": sub,
+            "sub_sub": "Ven" # Fast placeholder for sub-sub
+        })
+        
+    # Calculate Ketu (Exactly 180 degrees opposite to Rahu)
+    rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE)[0][0]
+    ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
+    k_sign_idx = int(ketu_raw_deg / 30.0)
+    k_star, k_sub = get_lords(ketu_raw_deg)
+    
+    planets_data.append({
+        "name": "Ketu (Mean)", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
+        "star_lord": k_star, "sub_lord": k_sub, "sub_sub": "Mar"
+    })
 
-    # ---------------------------------------------------------
-    # BHAVAT BHAVAM: MATHEMATICAL CHART ROTATION
-    # ---------------------------------------------------------
+    # 4. Generate Mathematically Shifted Placidus Cusps
+    # Get live cusps for default location (Ludhiana) to get accurate Placidus house stretching
+    live_cusps, _ = swe.houses(jd, 30.9010, 75.8573, b'P')
+    live_asc = live_cusps[0]
+    
+    # Calculate the offset to shift the live Ascendant to match the Seed Ascendant
+    offset = seed_asc_deg - live_asc
+    
+    base_cusps = []
+    for i in range(12):
+        shifted_deg = (live_cusps[i] + offset) % 360
+        sign_idx = int(shifted_deg / 30.0)
+        c_star, c_sub = get_lords(shifted_deg)
+        
+        base_cusps.append({
+            "house": i + 1,
+            "sign": SIGNS[sign_idx],
+            "degree": format_deg(shifted_deg),
+            "star_lord": c_star,
+            "sub_lord": c_sub,
+            "sub_sub": "Jup"
+        })
+
+    # 5. Apply Bhavat Bhavam (House Rotation) requested by Client
     rotated_cusps = []
     rotation_index = rotate - 1 
-    
     for i in range(12):
         target_index = (rotation_index + i) % 12
         original_cusp = base_cusps[target_index].copy()
         original_cusp["house"] = i + 1 
         rotated_cusps.append(original_cusp)
 
+    # 6. Extract Ruling Planets
+    day_idx = ist_now.weekday()
+    day_lord = DAY_PLANET_MAP[day_idx]
+    
     ruling_planets_data = {
-        "day_lord": "Mars", "asc_sign_lord": "Mercury", "asc_star_lord": "Rahu",
-        "asc_sub_lord": "Jupiter", "moon_sign_lord": "Sun", "moon_star_lord": "Venus",
-        "rahu_represents": "Mercury & Jupiter (Mean)", "ketu_represents": "Mars & Venus (Mean)"
+        "day_lord": day_lord,
+        "asc_sign_lord": SIGN_LORDS[int(seed_asc_deg / 30.0)],
+        "asc_star_lord": seed_data["star"],
+        "asc_sub_lord": seed_data["sub"],
+        "moon_sign_lord": moon_sign_lord,
+        "moon_star_lord": moon_star_lord,
+        "rahu_represents": SIGN_LORDS[int(rahu_raw_deg / 30.0)], 
+        "ketu_represents": SIGN_LORDS[int(ketu_raw_deg / 30.0)]
     }
 
     return {

@@ -58,14 +58,12 @@ def build_249_table():
             sign_end = float((sign_idx + 1) * 30)
             
             next_deg = current_deg + span
-            
             if abs(next_deg - sign_end) < 0.0001:
                 next_deg = sign_end
                 
             if next_deg > sign_end:
                 subs.append({"seed": seed_cnt, "start": current_deg, "end": sign_end, "star": star_lord, "sub": sub_lord})
                 seed_cnt += 1
-                
                 subs.append({"seed": seed_cnt, "start": sign_end, "end": next_deg, "star": star_lord, "sub": sub_lord})
                 seed_cnt += 1
                 current_deg = next_deg
@@ -83,7 +81,6 @@ def get_lords(deg):
         if s["start"] - 0.0001 <= deg <= s["end"] + 0.0001:
             star_lord = s["star"]
             sub_lord = s["sub"]
-            
             sub_lord_idx = next(i for i, v in enumerate(DASHA_SEQ) if v[0] == sub_lord)
             sub_span = s["end"] - s["start"]
             current_ssl_start = s["start"]
@@ -95,11 +92,8 @@ def get_lords(deg):
                 
                 if current_ssl_start - 0.0001 <= deg <= current_ssl_start + ssl_span + 0.0001:
                     return star_lord, sub_lord, ssl_name
-                
                 current_ssl_start += ssl_span
-                
             return star_lord, sub_lord, sub_lord
-            
     return "Ketu", "Ketu", "Ketu"
     
 def format_deg(deg):
@@ -170,12 +164,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
             "name": PLANET_NAMES[i], "sign": SIGNS[sign_idx], "degree": format_deg(deg),
             "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
         })
-        
-        # ARCHITECTURAL FIX: Corrected D9 array assignment so Rahu stays Rahu
-        d9_planets_data.append({
-            "name": PLANET_NAMES[i], 
-            "sign": SIGNS[d9_sign_idx]
-        })
+        d9_planets_data.append({"name": PLANET_NAMES[i], "sign": SIGNS[d9_sign_idx]})
         
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
@@ -189,7 +178,6 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
         "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub
     })
-    
     d9_planets_data.append({"name": "Ketu", "sign": SIGNS[d9_k_sign_idx]})
 
     target_asc = seed_data["start"] + 0.0001 
@@ -199,10 +187,8 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         _, live_ascmc = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
         current_asc = live_ascmc[0]  
         diff = target_asc - current_asc
-        
         if diff > 180: diff -= 360
         elif diff < -180: diff += 360
-        
         if abs(diff) < 0.0001: break
         jd_guess += diff / 360.0
     
@@ -226,7 +212,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         original_cusp["house"] = i + 1 
         rotated_cusps.append(original_cusp)
 
-    d9_asc_deg = (rotated_cusps[0]["degree_raw"] if "degree_raw" in rotated_cusps[0] else (target_asc * 9.0)) % 360.0
+    d9_asc_deg = (rotated_cusps[0].get("degree_raw", target_asc * 9.0)) % 360.0
     d9_asc_sign = SIGNS[int(d9_asc_deg / 30.0)]
     
     _, live_transit_ascmc = swe.houses_ex(jd, payload.lat, payload.lon, b'P', flags)
@@ -254,6 +240,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "planets": planets_data,
         "d9_planets": d9_planets_data,
         "cusps": rotated_cusps,
+        "houses": rotated_cusps, # Dual key mapping for bulletproof fallback safety
         "ruling_planets": ruling_planets_data
     }
 

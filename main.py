@@ -173,7 +173,7 @@ def generate_kp_horary_post(payload: HoraryPayload):
         pos, _ = swe.calc_ut(jd, p, flags)
         deg = pos[0]
         sign_idx = int(deg / 30.0)
-        star, sub = get_lords(deg)
+        star, sub, sub_sub = get_lords(deg)  # <--- Unpack 3 variables
         
         if PLANET_NAMES[i] == "Moon":
             moon_sign_lord = SIGN_LORDS[sign_idx]
@@ -185,9 +185,19 @@ def generate_kp_horary_post(payload: HoraryPayload):
             "degree": format_deg(deg),
             "star_lord": star,
             "sub_lord": sub,
-            "sub_sub": "Ven" 
+            "sub_sub": sub_sub  # <--- Map dynamic SSL
         })
         
+    rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
+    ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
+    k_sign_idx = int(ketu_raw_deg / 30.0)
+    k_star, k_sub, k_sub_sub = get_lords(ketu_raw_deg)  # <--- Unpack 3 variables
+    
+    planets_data.append({
+        "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
+        "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub  # <--- Map dynamic SSL
+    })    
+    
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
     k_sign_idx = int(ketu_raw_deg / 30.0)
@@ -208,7 +218,7 @@ def generate_kp_horary_post(payload: HoraryPayload):
     for i in range(12):
         shifted_deg = (live_cusps[i] + offset) % 360
         sign_idx = int(shifted_deg / 30.0)
-        c_star, c_sub = get_lords(shifted_deg)
+        c_star, c_sub, c_sub_sub = get_lords(shifted_deg)  # <--- Unpack 3 variables
         
         base_cusps.append({
             "house": i + 1,
@@ -216,9 +226,9 @@ def generate_kp_horary_post(payload: HoraryPayload):
             "degree": format_deg(shifted_deg),
             "star_lord": c_star,
             "sub_lord": c_sub,
-            "sub_sub": "Jup"
+            "sub_sub": c_sub_sub  # <--- Map dynamic SSL
         })
-
+        
     rotated_cusps = []
     rotation_index = payload.rotate_to_house - 1 
     for i in range(12):

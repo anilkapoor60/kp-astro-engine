@@ -29,7 +29,7 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key in VALID_API_KEYS:
         return api_key
     raise HTTPException(
-        status_code=status.HTTP_403_FORDIIDDEN if hasattr(status, 'HTTP_403_FORBIDDEN') else 403, 
+        status_code=status.HTTP_403_FORBIDDEN if hasattr(status, 'HTTP_403_FORBIDDEN') else 403, 
         detail="Access Denied: Invalid API Key."
     )
 
@@ -106,17 +106,9 @@ def format_deg(deg):
     return f"{d:02d}°{m:02d}'{s_str}\""
 
 def compute_kp_significators(planets_data, cusps_data):
-    """
-    Computes KP Significators Matrix for Levels A, B, C, D across all planets.
-    - Level A: Planets in the star of occupant(s) of the house.
-    - Level B: Planets occupying the house.
-    - Level C: Planets in the star of the house cusp lord (sign lord).
-    - Level D: House cusp lord (sign lord).
-    """
     planet_map = {p["name"]: p for p in planets_data}
     sig_matrix = {p["name"]: {"A": [], "B": [], "C": [], "D": []} for p in planets_data}
     
-    # Pre-calculate house lords and occupants
     house_lords = {}
     house_occupants = {i: [] for i in range(1, 13)}
     
@@ -131,38 +123,65 @@ def compute_kp_significators(planets_data, cusps_data):
                 house_occupants[cusp["house"]].append(p["name"])
 
     for h_num in range(1, 13):
-        # Level B: Occupants of House h_num
         occupants = house_occupants[h_num]
         for occ in occupants:
             if h_num not in sig_matrix[occ]["B"]:
                 sig_matrix[occ]["B"].append(h_num)
 
-        # Level A: Planets in the star of occupants
         for occ in occupants:
             for p in planets_data:
                 if p["star_lord"] == occ:
                     if h_num not in sig_matrix[p["name"]]["A"]:
                         sig_matrix[p["name"]]["A"].append(h_num)
 
-        # Level D: House Lord
         h_lord = house_lords.get(h_num)
         if h_lord and h_lord in sig_matrix:
             if h_num not in sig_matrix[h_lord]["D"]:
                 sig_matrix[h_lord]["D"].append(h_num)
 
-        # Level C: Planets in the star of House Lord
         if h_lord:
             for p in planets_data:
                 if p["star_lord"] == h_lord:
                     if h_num not in sig_matrix[p["name"]]["C"]:
                         sig_matrix[p["name"]]["C"].append(h_num)
 
-    # Sort house arrays for clean presentation
     for p_name in sig_matrix:
         for lvl in ["A", "B", "C", "D"]:
             sig_matrix[p_name][lvl] = sorted(list(set(sig_matrix[p_name][lvl])))
 
     return sig_matrix
+
+def get_planet_signified_houses(planet_name, planets_data, cusps_data):
+    occupied = []
+    owned = []
+    for cusp in cusps_data:
+        h_num = cusp["house"]
+        h_sign = cusp["sign"]
+        s_lord = SIGN_LORDS[SIGNS.index(h_sign)]
+        if s_lord == planet_name and h_num not in owned:
+            owned.append(h_num)
+        for p in planets_data:
+            if p["name"] == planet_name and p["sign"] == h_sign and h_num not in occupied:
+                occupied.append(h_num)
+    return sorted(list(set(occupied + owned)))
+
+def compute_nadi_significators(planets_data, cusps_data):
+    nadi_matrix = {}
+    for p in planets_data:
+        p_name = p["name"]
+        stl = p["star_lord"]
+        sub = p["sub_lord"]
+        
+        stl_houses = get_planet_signified_houses(stl, planets_data, cusps_data)
+        sub_houses = get_planet_signified_houses(sub, planets_data, cusps_data)
+        
+        nadi_matrix[p_name] = {
+            "star_lord": stl,
+            "star_lord_houses": stl_houses,
+            "sub_lord": sub,
+            "sub_lord_houses": sub_houses
+        }
+    return nadi_matrix
 
 @app.get("/health")
 def health_check():
@@ -284,6 +303,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
 
     day_idx = ist_now.weekday()
     day_lord = DAY_PLANET_MAP[day_idx]
+    moon_sub_lord = next((p["sub_lord"] for p in planets_data if p["name"] == "Moon"), "")
     
     ruling_planets_data = {
         "day_lord": day_lord,
@@ -292,12 +312,13 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "asc_sub_lord": seed_data["sub"],
         "moon_sign_lord": moon_sign_lord,
         "moon_star_lord": moon_star_lord,
+        "moon_sub_lord": moon_sub_lord,
         "rahu_represents": SIGN_LORDS[int(rahu_raw_deg / 30.0)], 
         "ketu_represents": SIGN_LORDS[int(ketu_raw_deg / 30.0)]
     }
 
-    # Compute KP ABCD Significators Matrix
     significators_matrix = compute_kp_significators(planets_data, rotated_cusps)
+    nadi_matrix = compute_nadi_significators(planets_data, rotated_cusps)
 
     return {
         "seed_used": payload.seed,
@@ -309,7 +330,8 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "cusps": rotated_cusps,
         "houses": rotated_cusps, 
         "ruling_planets": ruling_planets_data,
-        "significators": significators_matrix
+        "significators": significators_matrix,
+        "nadi_significators": nadi_matrix
     }
 
 @app.get("/api/horary")

@@ -153,7 +153,6 @@ def compute_kp_significators(planets_data, cusps_data):
     for h_num in range(1, 13):
         occ_list = house_occupants[h_num]
         
-        # Level B: House Occupants & Conjunctions with nodes
         for occ in occ_list:
             if h_num not in sig_matrix[occ]["B"]:
                 sig_matrix[occ]["B"].append(h_num)
@@ -163,7 +162,6 @@ def compute_kp_significators(planets_data, cusps_data):
                         if h_num not in sig_matrix[p["name"]]["B"]:
                             sig_matrix[p["name"]]["B"].append(h_num)
 
-        # Level A: Planets in the star of occupant(s) or their proxy agents
         for occ in occ_list:
             effective_occupants = get_effective_planets_for_star(occ)
             node_p = planet_map.get(occ)
@@ -178,13 +176,11 @@ def compute_kp_significators(planets_data, cusps_data):
                     if h_num not in sig_matrix[p["name"]]["A"]:
                         sig_matrix[p["name"]]["A"].append(h_num)
 
-        # Level D: House Cusp Lord (Sign Lord)
         h_lord = house_lords.get(h_num)
         if h_lord and h_lord in sig_matrix and h_lord not in ["Rahu", "Ketu"]:
             if h_num not in sig_matrix[h_lord]["D"]:
                 sig_matrix[h_lord]["D"].append(h_num)
 
-        # Level C: Planets in the star of House Lord or its proxy agents
         if h_lord:
             effective_lords = get_effective_planets_for_star(h_lord)
             for p in planets_data:
@@ -213,22 +209,13 @@ def get_planet_signified_houses(planet_name, planets_data, cusps_data):
             if h_occ not in occupied:
                 occupied.append(h_occ)
                 
-    # Handle Rahu/Ketu sign occupancy & dispositor inheritance for Nadi
     if planet_name in ["Rahu", "Ketu"]:
         node_p = next((p for p in planets_data if p["name"] == planet_name), None)
         if node_p:
             disp = node_p["sign_lord"]
-            # Add houses owned by dispositor (sign lord of the sign occupied by node)
             for cusp in cusps_data:
                 if cusp.get("sign_lord") == disp and cusp["house"] not in owned:
                     owned.append(cusp["house"])
-            # Add house occupied by dispositor
-            disp_p = next((p for p in planets_data if p["name"] == disp), None)
-            if disp_p:
-                disp_occ = get_placidus_house(disp_p["degree_raw"], cusps_data)
-                if disp_occ not in occupied:
-                    occupied.append(disp_occ)
-            # Add houses occupied by planets in star of node or dispositor
             for p in planets_data:
                 if p["star_lord"] == planet_name or p["star_lord"] == disp:
                     h_occ_sub = get_placidus_house(p["degree_raw"], cusps_data)
@@ -246,10 +233,9 @@ def compute_nadi_significators(planets_data, cusps_data):
         p_occupancy = [get_placidus_house(p["degree_raw"], cusps_data)]
         p_ownership = [c["house"] for c in cusps_data if c.get("sign_lord") == p_name]
         
-        # For Rahu/Ketu, also include dispositor house ownership and occupancy at planet level
         if p_name in ["Rahu", "Ketu"]:
             disp = p["sign_lord"]
-            disp_owns = [c["house"] for c in cusps_data if c.get("sign_lord"] == disp]
+            disp_owns = [c["house"] for c in cusps_data if c.get("sign_lord") == disp]
             for d_own in disp_owns:
                 if d_own not in p_ownership: p_ownership.append(d_own)
             disp_p = next((pl for pl in planets_data if pl["name"] == disp), None)

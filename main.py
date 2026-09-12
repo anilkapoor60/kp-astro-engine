@@ -29,7 +29,7 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key in VALID_API_KEYS:
         return api_key
     raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, 
+        status_code=status.HTTP_403_FORDIIDDEN if hasattr(status, 'HTTP_403_FORBIDDEN') else 403, 
         detail="Access Denied: Invalid API Key."
     )
 
@@ -102,26 +102,68 @@ def format_deg(deg):
     m_float = (deg - int(deg)) * 60
     m = int(m_float)
     s = round((m_float - m) * 60, 2)
-    
-    # Format cleanly as 25°50'37.74"
     s_str = f"{s:05.2f}" if s >= 10 else f"0{s:04.2f}"
     return f"{d:02d}°{m:02d}'{s_str}\""
 
 def compute_kp_significators(planets_data, cusps_data):
-    # Mapping planets to their occupied houses based on sign/cusp boundaries
-    sig_matrix = {}
-    for house in cusps_data:
-        h_num = house["house"]
-        h_sign = house["sign"]
-        for p in planets_data:
-            if p["sign"] == h_sign:
-                if p["name"] not in sig_matrix: sig_matrix[p["name"]] = {"A": [], "B": [], "C": [], "D": []}
-                if h_num not in sig_matrix[p["name"]]["B"]:
-                    sig_matrix[p["name"]]["B"].append(h_num) # Level B: Occupant
-                    
-    # Level A, C, D mapping logic can be appended here and passed to Node.js
-    return sig_matrix
+    """
+    Computes KP Significators Matrix for Levels A, B, C, D across all planets.
+    - Level A: Planets in the star of occupant(s) of the house.
+    - Level B: Planets occupying the house.
+    - Level C: Planets in the star of the house cusp lord (sign lord).
+    - Level D: House cusp lord (sign lord).
+    """
+    planet_map = {p["name"]: p for p in planets_data}
+    sig_matrix = {p["name"]: {"A": [], "B": [], "C": [], "D": []} for p in planets_data}
     
+    # Pre-calculate house lords and occupants
+    house_lords = {}
+    house_occupants = {i: [] for i in range(1, 13)}
+    
+    for cusp in cusps_data:
+        h_num = cusp["house"]
+        house_lords[h_num] = cusp["sign_lord"] if "sign_lord" in cusp else SIGN_LORDS[SIGNS.index(cusp["sign"])]
+
+    for p in planets_data:
+        p_sign = p["sign"]
+        for cusp in cusps_data:
+            if cusp["sign"] == p_sign:
+                house_occupants[cusp["house"]].append(p["name"])
+
+    for h_num in range(1, 13):
+        # Level B: Occupants of House h_num
+        occupants = house_occupants[h_num]
+        for occ in occupants:
+            if h_num not in sig_matrix[occ]["B"]:
+                sig_matrix[occ]["B"].append(h_num)
+
+        # Level A: Planets in the star of occupants
+        for occ in occupants:
+            for p in planets_data:
+                if p["star_lord"] == occ:
+                    if h_num not in sig_matrix[p["name"]]["A"]:
+                        sig_matrix[p["name"]]["A"].append(h_num)
+
+        # Level D: House Lord
+        h_lord = house_lords.get(h_num)
+        if h_lord and h_lord in sig_matrix:
+            if h_num not in sig_matrix[h_lord]["D"]:
+                sig_matrix[h_lord]["D"].append(h_num)
+
+        # Level C: Planets in the star of House Lord
+        if h_lord:
+            for p in planets_data:
+                if p["star_lord"] == h_lord:
+                    if h_num not in sig_matrix[p["name"]]["C"]:
+                        sig_matrix[p["name"]]["C"].append(h_num)
+
+    # Sort house arrays for clean presentation
+    for p_name in sig_matrix:
+        for lvl in ["A", "B", "C", "D"]:
+            sig_matrix[p_name][lvl] = sorted(list(set(sig_matrix[p_name][lvl])))
+
+    return sig_matrix
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "message": "Swiss Ephemeris 249-Engine Awake"}
@@ -216,14 +258,14 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     true_horary_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
     
     base_cusps = []
-    # FIX: Corrected 0-indexed house loop (0 to 11 for houses 1 to 12)
     for i in range(12):
         cusp_deg = true_horary_cusps[i]
         sign_idx = int(cusp_deg / 30.0)
         c_star, c_sub, c_sub_sub = get_lords(cusp_deg)
         base_cusps.append({
             "house": i + 1, "sign": SIGNS[sign_idx], "degree": format_deg(cusp_deg),
-            "degree_raw": cusp_deg, "star_lord": c_star, "sub_lord": c_sub, "sub_sub": c_sub_sub
+            "degree_raw": cusp_deg, "sign_lord": SIGN_LORDS[sign_idx],
+            "star_lord": c_star, "sub_lord": c_sub, "sub_sub": c_sub_sub
         })
         
     rotated_cusps = []
@@ -254,6 +296,9 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "ketu_represents": SIGN_LORDS[int(ketu_raw_deg / 30.0)]
     }
 
+    # Compute KP ABCD Significators Matrix
+    significators_matrix = compute_kp_significators(planets_data, rotated_cusps)
+
     return {
         "seed_used": payload.seed,
         "rotation_applied": payload.rotate_to_house,
@@ -263,7 +308,8 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "d9_planets": d9_planets_data,
         "cusps": rotated_cusps,
         "houses": rotated_cusps, 
-        "ruling_planets": ruling_planets_data
+        "ruling_planets": ruling_planets_data,
+        "significators": significators_matrix
     }
 
 @app.get("/api/horary")

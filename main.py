@@ -105,8 +105,27 @@ def format_deg(deg):
     s_str = f"{s:05.2f}" if s >= 10 else f"0{s:04.2f}"
     return f"{d:02d}°{m:02d}'{s_str}\""
 
+def get_placidus_house(deg, cusps_data):
+    deg = deg % 360
+    sorted_cusps = sorted(cusps_data, key=lambda x: x["house"])
+    for i in range(12):
+        curr = sorted_cusps[i]
+        nxt = sorted_cusps[(i + 1) % 12]
+        start = curr["degree_raw"]
+        end = nxt["degree_raw"]
+        if start <= end:
+            if start <= deg < end:
+                return curr["house"]
+        else:
+            if deg >= start or deg < end:
+                return curr["house"]
+    return 1
+
 def compute_kp_significators(planets_data, cusps_data):
+    # Mapping exact Placidus house occupancy and lordship per KP rules
+    planet_map = {p["name"]: p for p in planets_data}
     sig_matrix = {p["name"]: {"A": [], "B": [], "C": [], "D": []} for p in planets_data}
+    
     house_lords = {}
     house_occupants = {i: [] for i in range(1, 13)}
     
@@ -115,31 +134,59 @@ def compute_kp_significators(planets_data, cusps_data):
         house_lords[h_num] = cusp.get("sign_lord", SIGN_LORDS[SIGNS.index(cusp["sign"])])
 
     for p in planets_data:
-        p_sign = p["sign"]
-        for cusp in cusps_data:
-            if cusp["sign"] == p_sign:
-                house_occupants[cusp["house"]].append(p["name"])
+        h_occ = get_placidus_house(p["degree_raw"], cusps_data)
+        p["occupies_house"] = h_occ
+        if p["name"] not in house_occupants[h_occ]:
+            house_occupants[h_occ].append(p["name"])
+
+    # Helper to resolve node proxy actors (Rahu and Ketu act as agents for conjunctions, sign dispositor, star lord)
+    def get_effective_planets_for_star(star_lord_name):
+        actors = [star_lord_name]
+        if star_lord_name in ["Rahu", "Ketu"]:
+            node_p = planet_map.get(star_lord_name)
+            if node_p:
+                # Add sign dispositor
+                dispositor = node_p["sign_lord"]
+                if dispositor not in actors: actors.append(dispositor)
+                # Add planets in star of node
+                for pl in planets_data:
+                    if pl["star_lord"] == star_lord_name and pl["name"] not in actors:
+                        actors.append(pl["name"])
+        return actors
 
     for h_num in range(1, 13):
-        occupants = house_occupants[h_num]
-        for occ in occupants:
+        occ_list = house_occupants[h_num]
+        
+        # Level B: House Occupants
+        for occ in occ_list:
             if h_num not in sig_matrix[occ]["B"]:
                 sig_matrix[occ]["B"].append(h_num)
+            # If occupant is node, add conjunct planets
+            if occ in ["Rahu", "Ketu"]:
+                for p in planets_data:
+                    if p["occupies_house"] == h_num and p["name"] != occ:
+                        if h_num not in sig_matrix[p["name"]]["B"]:
+                            sig_matrix[p["name"]]["B"].append(h_num)
 
-        for occ in occupants:
+        # Level A: Planets in the star of occupant(s)
+        for occ in occ_list:
+            effective_occupants = get_effective_planets_for_star(occ)
             for p in planets_data:
-                if p["star_lord"] == occ:
+                if p["star_lord"] in effective_occupants:
                     if h_num not in sig_matrix[p["name"]]["A"]:
                         sig_matrix[p["name"]]["A"].append(h_num)
 
+        # Level D: House Cusp Lord (Sign Lord)
         h_lord = house_lords.get(h_num)
-        if h_lord and h_lord in sig_matrix:
+        if h_lord and h_lord in sig_matrix and h_lord not in ["Rahu", "Ketu"]:
             if h_num not in sig_matrix[h_lord]["D"]:
                 sig_matrix[h_lord]["D"].append(h_num)
 
+        # Level C: Planets in the star of House Lord
         if h_lord:
+            effective_lords = get_effective_planets_for_star(h_lord)
             for p in planets_data:
-                if p["star_lord"] == h_lord:
+                if p["star_lord"] in effective_lords:
                     if h_num not in sig_matrix[p["name"]]["C"]:
                         sig_matrix[p["name"]]["C"].append(h_num)
 
@@ -154,19 +201,42 @@ def get_planet_signified_houses(planet_name, planets_data, cusps_data):
     owned = []
     for cusp in cusps_data:
         h_num = cusp["house"]
-        h_sign = cusp["sign"]
-        s_lord = SIGN_LORDS[SIGNS.index(h_sign)]
+        s_lord = cusp.get("sign_lord", SIGN_LORDS[SIGNS.index(cusp["sign"])])
         if s_lord == planet_name and h_num not in owned:
             owned.append(h_num)
-        for p in planets_data:
-            if p["name"] == planet_name and p["sign"] == h_sign and h_num not in occupied:
-                occupied.append(h_num)
+            
+    for p in planets_data:
+        if p["name"] == planet_name:
+            h_occ = get_placidus_house(p["degree_raw"], cusps_data)
+            if h_occ not in occupied:
+                occupied.append(h_occ)
+                
+    # Handle Rahu/Ketu proxy extension for Nadi
+    if planet_name in ["Rahu", "Ketu"]:
+        node_p = next((p for p in planets_data if p["name"] == planet_name), None)
+        if node_p:
+            disp = node_p["sign_lord"]
+            for cusp in cusps_data:
+                if cusp.get("sign_lord") == disp and cusp["house"] not in owned:
+                    owned.append(cusp["house"])
+            for p in planets_data:
+                if p["star_lord"] == planet_name:
+                    h_occ_sub = get_placidus_house(p["degree_raw"], cusps_data)
+                    if h_occ_sub not in occupied:
+                        occupied.append(h_occ_sub)
+
     return sorted(list(set(occupied + owned)))
 
 def compute_nadi_significators(planets_data, cusps_data):
     nadi_matrix = {}
     for p in planets_data:
         p_name = p["name"]
+        sign_lord = p["sign_lord"]
+        
+        # Exact house occupancy and ownership for the planet itself
+        p_occupancy = [get_placidus_house(p["degree_raw"], cusps_data)]
+        p_ownership = [c["house"] for c in cusps_data if c.get("sign_lord") == p_name]
+        
         stl = p["star_lord"]
         sub = p["sub_lord"]
         
@@ -174,6 +244,9 @@ def compute_nadi_significators(planets_data, cusps_data):
         sub_houses = get_planet_signified_houses(sub, planets_data, cusps_data)
         
         nadi_matrix[p_name] = {
+            "sign_lord": sign_lord,
+            "occupancy": sorted(list(set(p_occupancy))),
+            "ownership": sorted(list(set(p_ownership))),
             "star_lord": stl,
             "star_lord_houses": stl_houses,
             "sub_lord": sub,
@@ -243,7 +316,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
 
         planets_data.append({
             "name": PLANET_NAMES[i], "sign": SIGNS[sign_idx], "degree": format_deg(deg),
-            "sign_lord": sign_lord, "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
+            "degree_raw": deg, "sign_lord": sign_lord, "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
         })
         d9_planets_data.append({"name": PLANET_NAMES[i], "sign": SIGNS[d9_sign_idx]})
         
@@ -258,7 +331,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     
     planets_data.append({
         "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
-        "sign_lord": k_sign_lord, "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub
+        "degree_raw": ketu_raw_deg, "sign_lord": k_sign_lord, "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub
     })
     d9_planets_data.append({"name": "Ketu", "sign": SIGNS[d9_k_sign_idx]})
 
@@ -304,12 +377,13 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     day_idx = ist_now.weekday()
     day_lord = DAY_PLANET_MAP[day_idx]
     moon_sub_lord = next((p["sub_lord"] for p in planets_data if p["name"] == "Moon"), "")
+    asc_sub_lord = seed_data["sub"]
     
     ruling_planets_data = {
         "day_lord": day_lord,
         "asc_sign_lord": SIGN_LORDS[int(target_asc / 30.0)],
         "asc_star_lord": seed_data["star"],
-        "asc_sub_lord": seed_data["sub"],
+        "asc_sub_lord": asc_sub_lord,
         "moon_sign_lord": moon_sign_lord,
         "moon_star_lord": moon_star_lord,
         "moon_sub_lord": moon_sub_lord,

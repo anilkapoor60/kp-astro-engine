@@ -106,15 +106,13 @@ def format_deg(deg):
     return f"{d:02d}°{m:02d}'{s_str}\""
 
 def compute_kp_significators(planets_data, cusps_data):
-    planet_map = {p["name"]: p for p in planets_data}
     sig_matrix = {p["name"]: {"A": [], "B": [], "C": [], "D": []} for p in planets_data}
-    
     house_lords = {}
     house_occupants = {i: [] for i in range(1, 13)}
     
     for cusp in cusps_data:
         h_num = cusp["house"]
-        house_lords[h_num] = cusp["sign_lord"] if "sign_lord" in cusp else SIGN_LORDS[SIGNS.index(cusp["sign"])]
+        house_lords[h_num] = cusp.get("sign_lord", SIGN_LORDS[SIGNS.index(cusp["sign"])])
 
     for p in planets_data:
         p_sign = p["sign"]
@@ -233,24 +231,26 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         pos, _ = swe.calc_ut(jd, p, flags)
         deg = pos[0]
         sign_idx = int(deg / 30.0)
+        sign_lord = SIGN_LORDS[sign_idx]
         star, sub, sub_sub = get_lords(deg)
         
         d9_deg = (deg * 9.0) % 360.0
         d9_sign_idx = int(d9_deg / 30.0)
         
         if PLANET_NAMES[i] == "Moon":
-            moon_sign_lord = SIGN_LORDS[sign_idx]
+            moon_sign_lord = sign_lord
             moon_star_lord = star
 
         planets_data.append({
             "name": PLANET_NAMES[i], "sign": SIGNS[sign_idx], "degree": format_deg(deg),
-            "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
+            "sign_lord": sign_lord, "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
         })
         d9_planets_data.append({"name": PLANET_NAMES[i], "sign": SIGNS[d9_sign_idx]})
         
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
     k_sign_idx = int(ketu_raw_deg / 30.0)
+    k_sign_lord = SIGN_LORDS[k_sign_idx]
     k_star, k_sub, k_sub_sub = get_lords(ketu_raw_deg)
     
     d9_k_deg = (ketu_raw_deg * 9.0) % 360.0
@@ -258,7 +258,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     
     planets_data.append({
         "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
-        "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub
+        "sign_lord": k_sign_lord, "star_lord": k_star, "sub_lord": k_sub, "sub_sub": k_sub_sub
     })
     d9_planets_data.append({"name": "Ketu", "sign": SIGNS[d9_k_sign_idx]})
 

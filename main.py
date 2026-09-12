@@ -85,8 +85,29 @@ def get_lords(deg):
     deg = deg % 360
     for s in KP_TABLE:
         if s["start"] <= deg <= s["end"] + 0.00001:
-            return s["star"], s["sub"]
-    return "Ketu", "Ketu"
+            star_lord = s["star"]
+            sub_lord = s["sub"]
+            
+            # Find the starting index of the Sub Lord in the Dasha sequence
+            sub_lord_idx = next(i for i, v in enumerate(DASHA_SEQ) if v[0] == sub_lord)
+            
+            sub_span = s["end"] - s["start"]
+            current_ssl_start = s["start"]
+            
+            # Divide the Sub into 9 Sub-Subs dynamically
+            for i in range(9):
+                ssl_idx = (sub_lord_idx + i) % 9
+                ssl_name, years = DASHA_SEQ[ssl_idx]
+                ssl_span = sub_span * (years / 120.0)
+                
+                if current_ssl_start <= deg <= current_ssl_start + ssl_span + 0.00001:
+                    return star_lord, sub_lord, ssl_name
+                
+                current_ssl_start += ssl_span
+                
+            return star_lord, sub_lord, sub_lord # Fallback (should theoretically never hit)
+            
+    return "Ketu", "Ketu", "Ketu"
     
 def format_deg(deg):
     d = int(deg) % 30

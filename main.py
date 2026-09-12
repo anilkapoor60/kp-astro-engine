@@ -97,10 +97,16 @@ def get_lords(deg):
     return "Ketu", "Ketu", "Ketu"
     
 def format_deg(deg):
+    deg = deg % 360
     d = int(deg) % 30
-    m = int((deg - int(deg)) * 60)
-    return f"{d:02d}°{m:02d}'"
-
+    m_float = (deg - int(deg)) * 60
+    m = int(m_float)
+    s = round((m_float - m) * 60, 2)
+    
+    # Format cleanly as 25°50'37.74"
+    s_str = f"{s:05.2f}" if s >= 10 else f"0{s:04.2f}"
+    return f"{d:02d}°{m:02d}'{s_str}\""
+    
 @app.get("/health")
 def health_check():
     return {"status": "ok", "message": "Swiss Ephemeris 249-Engine Awake"}

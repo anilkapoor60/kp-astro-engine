@@ -195,12 +195,13 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     true_horary_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
     
     base_cusps = []
-    for i in range(1, 13):
+    # FIX: Corrected 0-indexed house loop (0 to 11 for houses 1 to 12)
+    for i in range(12):
         cusp_deg = true_horary_cusps[i]
         sign_idx = int(cusp_deg / 30.0)
         c_star, c_sub, c_sub_sub = get_lords(cusp_deg)
         base_cusps.append({
-            "house": i, "sign": SIGNS[sign_idx], "degree": format_deg(cusp_deg),
+            "house": i + 1, "sign": SIGNS[sign_idx], "degree": format_deg(cusp_deg),
             "degree_raw": cusp_deg, "star_lord": c_star, "sub_lord": c_sub, "sub_sub": c_sub_sub
         })
         
@@ -240,7 +241,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
         "planets": planets_data,
         "d9_planets": d9_planets_data,
         "cusps": rotated_cusps,
-        "houses": rotated_cusps, # Dual key mapping for bulletproof fallback safety
+        "houses": rotated_cusps, 
         "ruling_planets": ruling_planets_data
     }
 

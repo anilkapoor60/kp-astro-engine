@@ -59,53 +59,56 @@ def build_249_table():
             sub_lord, years = DASHA_SEQ[sub_idx]
             span = (years / 120.0) * (40.0 / 3.0) 
             
+            # STRICT FIX: Eradicate floating-point phantom seeds
+            current_deg = round(current_deg, 6)
+            span = round(span, 6)
+            
             sign_idx = int(current_deg / 30.0)
             if sign_idx > 11: sign_idx = 11
-            sign_end = (sign_idx + 1) * 30.0
+            sign_end = float((sign_idx + 1) * 30)
             
-            if current_deg + span > sign_end + 0.00001:
-                part1 = sign_end - current_deg
+            next_deg = round(current_deg + span, 6)
+            
+            if next_deg > sign_end:
+                part1 = round(sign_end - current_deg, 6)
                 subs.append({"seed": seed_cnt, "start": current_deg, "end": sign_end, "star": star_lord, "sub": sub_lord})
                 seed_cnt += 1
-                current_deg = sign_end
                 
-                part2 = span - part1
-                subs.append({"seed": seed_cnt, "start": current_deg, "end": current_deg + part2, "star": star_lord, "sub": sub_lord})
+                part2 = round(span - part1, 6)
+                subs.append({"seed": seed_cnt, "start": sign_end, "end": round(sign_end + part2, 6), "star": star_lord, "sub": sub_lord})
                 seed_cnt += 1
-                current_deg += part2
+                current_deg = round(sign_end + part2, 6)
             else:
-                subs.append({"seed": seed_cnt, "start": current_deg, "end": current_deg + span, "star": star_lord, "sub": sub_lord})
+                subs.append({"seed": seed_cnt, "start": current_deg, "end": next_deg, "star": star_lord, "sub": sub_lord})
                 seed_cnt += 1
-                current_deg += span
+                current_deg = next_deg
     return subs
 
 KP_TABLE = build_249_table()
 
 def get_lords(deg):
-    deg = deg % 360
+    deg = round(deg % 360, 6)
     for s in KP_TABLE:
-        if s["start"] <= deg <= s["end"] + 0.00001:
+        # 0.0001 padding handles the outermost boundaries safely
+        if s["start"] - 0.0001 <= deg <= s["end"] + 0.0001:
             star_lord = s["star"]
             sub_lord = s["sub"]
             
-            # Find the starting index of the Sub Lord in the Dasha sequence
             sub_lord_idx = next(i for i, v in enumerate(DASHA_SEQ) if v[0] == sub_lord)
-            
             sub_span = s["end"] - s["start"]
             current_ssl_start = s["start"]
             
-            # Divide the Sub into 9 Sub-Subs dynamically
             for i in range(9):
                 ssl_idx = (sub_lord_idx + i) % 9
                 ssl_name, years = DASHA_SEQ[ssl_idx]
                 ssl_span = sub_span * (years / 120.0)
                 
-                if current_ssl_start <= deg <= current_ssl_start + ssl_span + 0.00001:
+                if current_ssl_start - 0.0001 <= deg <= current_ssl_start + ssl_span + 0.0001:
                     return star_lord, sub_lord, ssl_name
                 
                 current_ssl_start += ssl_span
                 
-            return star_lord, sub_lord, sub_lord # Fallback (should theoretically never hit)
+            return star_lord, sub_lord, sub_lord
             
     return "Ketu", "Ketu", "Ketu"
     
@@ -143,7 +146,7 @@ class HoraryPayload(BaseModel):
 # ==========================================
 @app.post("/kp/horary")
 def generate_kp_horary_post(payload: HoraryPayload):
-    # 1. PRECISE TIMEZONE CALCULATION
+    # 1. PRECISE TIMEZONE CALCULATION (FOR PLANETS)
     if payload.year is not None:
         local_dt = datetime(payload.year, payload.month, payload.day, payload.hour, payload.min, payload.sec)
         utc_dt = local_dt - timedelta(hours=payload.tz)
@@ -154,12 +157,10 @@ def generate_kp_horary_post(payload: HoraryPayload):
         ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
         jd = swe.julday(now.year, now.month, now.day, now.hour + now.minute/60.0 + now.second/3600.0)
         
-    # 2. ENFORCE KRISHNAMURTI AYANAMSA GLOBALLY
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
     flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
     
     seed_data = KP_TABLE[payload.seed - 1]
-    seed_asc_deg = seed_data["start"] + 0.0001 
     
     SWE_PLANETS = [swe.SUN, swe.MOON, swe.MARS, swe.MERCURY, swe.JUPITER, swe.VENUS, swe.SATURN, swe.MEAN_NODE]
     PLANET_NAMES = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu"]
@@ -168,7 +169,7 @@ def generate_kp_horary_post(payload: HoraryPayload):
     moon_sign_lord = ""
     moon_star_lord = ""
     
-    # CALCULATE PLANETS WITH SIDEREAL FLAGS & DYNAMIC SSL
+    # 2. CALCULATE PLANETS AT EXACT TIME OF JUDGMENT (jd)
     for i, p in enumerate(SWE_PLANETS):
         pos, _ = swe.calc_ut(jd, p, flags)
         deg = pos[0]
@@ -188,7 +189,6 @@ def generate_kp_horary_post(payload: HoraryPayload):
             "sub_sub": sub_sub
         })
         
-    # CALCULATE KETU EXPLICITLY
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
     k_sign_idx = int(ketu_raw_deg / 30.0)
@@ -203,22 +203,39 @@ def generate_kp_horary_post(payload: HoraryPayload):
         "sub_sub": k_sub_sub
     })
 
-    # 3. HOUSE CUSP CALCULATION (SIDEREAL)
-    live_cusps, _ = swe.houses_ex(jd, payload.lat, payload.lon, b'P', flags)
-    live_asc = live_cusps[0]
+    # 3. STRICT FIX: ITERATIVE JULIAN DAY SHIFT FOR TRUE PLACIDUS HORARY CUSPS
+    # Start slightly inside the seed to ensure we capture the correct sub
+    target_asc = seed_data["start"] + 0.0001 
+    jd_guess = jd
     
-    offset = seed_asc_deg - live_asc
+    # Scrub the 24-hour cycle to find the exact millisecond the Horary Ascendant rises
+    for _ in range(15):
+        live_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
+        current_asc = live_cusps[0]
+        
+        diff = target_asc - current_asc
+        # Normalize angular difference
+        if diff > 180: diff -= 360
+        elif diff < -180: diff += 360
+        
+        if abs(diff) < 0.0001:
+            break
+            
+        jd_guess += diff / 360.0
+    
+    # Generate perfectly proportioned Placidus houses for the exact Horary moment
+    true_horary_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
     
     base_cusps = []
     for i in range(12):
-        shifted_deg = (live_cusps[i] + offset) % 360
-        sign_idx = int(shifted_deg / 30.0)
-        c_star, c_sub, c_sub_sub = get_lords(shifted_deg)
+        cusp_deg = true_horary_cusps[i]
+        sign_idx = int(cusp_deg / 30.0)
+        c_star, c_sub, c_sub_sub = get_lords(cusp_deg)
         
         base_cusps.append({
             "house": i + 1,
             "sign": SIGNS[sign_idx],
-            "degree": format_deg(shifted_deg),
+            "degree": format_deg(cusp_deg),
             "star_lord": c_star,
             "sub_lord": c_sub,
             "sub_sub": c_sub_sub
@@ -237,7 +254,7 @@ def generate_kp_horary_post(payload: HoraryPayload):
     
     ruling_planets_data = {
         "day_lord": day_lord,
-        "asc_sign_lord": SIGN_LORDS[int(seed_asc_deg / 30.0)],
+        "asc_sign_lord": SIGN_LORDS[int(target_asc / 30.0)],
         "asc_star_lord": seed_data["star"],
         "asc_sub_lord": seed_data["sub"],
         "moon_sign_lord": moon_sign_lord,

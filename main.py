@@ -1,10 +1,11 @@
 import os
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from fastapi import FastAPI, Query, Security, HTTPException, status
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import swisseph as swe
 
 app = FastAPI(title="AskRajni KP Astro Engine")
@@ -56,7 +57,7 @@ def build_249_table():
         for i in range(9):
             sub_idx = (star_idx + i) % 9
             sub_lord, years = DASHA_SEQ[sub_idx]
-            span = (years / 120.0) * (40.0 / 3.0) # 13.333333 degrees per nakshatra
+            span = (years / 120.0) * (40.0 / 3.0) 
             
             sign_idx = int(current_deg / 30.0)
             if sign_idx > 11: sign_idx = 11
@@ -78,7 +79,6 @@ def build_249_table():
                 current_deg += span
     return subs
 
-# Generate the massive 249 memory table on server startup
 KP_TABLE = build_249_table()
 
 def get_lords(deg):
@@ -98,22 +98,48 @@ def health_check():
     return {"status": "ok", "message": "Swiss Ephemeris 249-Engine Awake"}
 
 # ==========================================
-# 3. LIVE HORARY ENGINE (REAL SWISS EPHEMERIS)
+# 3. SCHEMA FOR NODE.JS INTEGRATION
 # ==========================================
-@app.get("/api/horary")
-def generate_kp_horary(
-    seed: int = Query(..., ge=1, le=249),
-    rotate: int = Query(1, ge=1, le=12),
-    api_key: str = Security(verify_api_key)
-):
-    now = datetime.utcnow()
-    ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
-    jd = swe.julday(now.year, now.month, now.day, now.hour + now.minute/60.0 + now.second/3600.0)
+class HoraryPayload(BaseModel):
+    seed: int
+    rotate_to_house: int = 1
+    city: str = "Ludhiana"
+    lat: float = 30.9010
+    lon: float = 75.8573
+    tz: float = 5.5
+    year: int = None
+    month: int = None
+    day: int = None
+    hour: int = None
+    min: int = None
+    sec: int = None
+    ayanamsa: int = 4
+    system: str = "sidereal"
+    ayanamsa_name: str = "KP"
+
+# ==========================================
+# 4. LIVE HORARY ENGINE (STRICT SIDEREAL)
+# ==========================================
+@app.post("/kp/horary")
+def generate_kp_horary_post(payload: HoraryPayload):
+    # 1. PRECISE TIMEZONE CALCULATION
+    if payload.year is not None:
+        local_dt = datetime(payload.year, payload.month, payload.day, payload.hour, payload.min, payload.sec)
+        utc_dt = local_dt - timedelta(hours=payload.tz)
+        jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0 + utc_dt.second/3600.0)
+        ist_now = local_dt
+    else:
+        now = datetime.utcnow()
+        ist_now = datetime.now(pytz.timezone('Asia/Kolkata'))
+        jd = swe.julday(now.year, now.month, now.day, now.hour + now.minute/60.0 + now.second/3600.0)
+        
+    # 2. ENFORCE KRISHNAMURTI AYANAMSA GLOBALLY
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+    flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
     
-    seed_data = KP_TABLE[seed - 1]
+    seed_data = KP_TABLE[payload.seed - 1]
     seed_asc_deg = seed_data["start"] + 0.0001 
     
-    # FIX: Renamed Rahu (Mean) to strictly "Rahu"
     SWE_PLANETS = [swe.SUN, swe.MOON, swe.MARS, swe.MERCURY, swe.JUPITER, swe.VENUS, swe.SATURN, swe.MEAN_NODE]
     PLANET_NAMES = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu"]
     
@@ -121,8 +147,9 @@ def generate_kp_horary(
     moon_sign_lord = ""
     moon_star_lord = ""
     
+    # CALCULATE PLANETS WITH SIDEREAL FLAGS
     for i, p in enumerate(SWE_PLANETS):
-        pos, _ = swe.calc_ut(jd, p)
+        pos, _ = swe.calc_ut(jd, p, flags)
         deg = pos[0]
         sign_idx = int(deg / 30.0)
         star, sub = get_lords(deg)
@@ -140,18 +167,18 @@ def generate_kp_horary(
             "sub_sub": "Ven" 
         })
         
-    rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE)[0][0]
+    rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
     k_sign_idx = int(ketu_raw_deg / 30.0)
     k_star, k_sub = get_lords(ketu_raw_deg)
     
-    # FIX: Renamed Ketu (Mean) to strictly "Ketu"
     planets_data.append({
         "name": "Ketu", "sign": SIGNS[k_sign_idx], "degree": format_deg(ketu_raw_deg),
         "star_lord": k_star, "sub_lord": k_sub, "sub_sub": "Mar"
     })
 
-    live_cusps, _ = swe.houses(jd, 30.9010, 75.8573, b'P')
+    # 3. HOUSE CUSP CALCULATION (SIDEREAL)
+    live_cusps, _ = swe.houses_ex(jd, payload.lat, payload.lon, b'P', flags)
     live_asc = live_cusps[0]
     
     offset = seed_asc_deg - live_asc
@@ -172,7 +199,7 @@ def generate_kp_horary(
         })
 
     rotated_cusps = []
-    rotation_index = rotate - 1 
+    rotation_index = payload.rotate_to_house - 1 
     for i in range(12):
         target_index = (rotation_index + i) % 12
         original_cusp = base_cusps[target_index].copy()
@@ -194,12 +221,24 @@ def generate_kp_horary(
     }
 
     return {
-        "seed_used": seed,
-        "rotation_applied": rotate,
+        "seed_used": payload.seed,
+        "rotation_applied": payload.rotate_to_house,
         "planets": planets_data,
         "cusps": rotated_cusps,
         "ruling_planets": ruling_planets_data
     }
+
+# ==========================================
+# 5. LEGACY FALLBACK FOR OLDER REQUESTS
+# ==========================================
+@app.get("/api/horary")
+def generate_kp_horary_get(
+    seed: int = Query(..., ge=1, le=249),
+    rotate: int = Query(1, ge=1, le=12),
+    api_key: str = Security(verify_api_key)
+):
+    req = HoraryPayload(seed=seed, rotate_to_house=rotate)
+    return generate_kp_horary_post(req)
 
 if __name__ == "__main__":
     import uvicorn

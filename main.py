@@ -106,6 +106,21 @@ def format_deg(deg):
     # Format cleanly as 25°50'37.74"
     s_str = f"{s:05.2f}" if s >= 10 else f"0{s:04.2f}"
     return f"{d:02d}°{m:02d}'{s_str}\""
+
+def compute_kp_significators(planets_data, cusps_data):
+    # Mapping planets to their occupied houses based on sign/cusp boundaries
+    sig_matrix = {}
+    for house in cusps_data:
+        h_num = house["house"]
+        h_sign = house["sign"]
+        for p in planets_data:
+            if p["sign"] == h_sign:
+                if p["name"] not in sig_matrix: sig_matrix[p["name"]] = {"A": [], "B": [], "C": [], "D": []}
+                if h_num not in sig_matrix[p["name"]]["B"]:
+                    sig_matrix[p["name"]]["B"].append(h_num) # Level B: Occupant
+                    
+    # Level A, C, D mapping logic can be appended here and passed to Node.js
+    return sig_matrix
     
 @app.get("/health")
 def health_check():

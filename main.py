@@ -170,7 +170,12 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
             "name": PLANET_NAMES[i], "sign": SIGNS[sign_idx], "degree": format_deg(deg),
             "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
         })
-        d9_planets_data.append({"name": "Ketu" if PLANET_NAMES[i] == "Rahu" else PLANET_NAMES[i], "sign": SIGNS[d9_sign_idx]})
+        
+        # ARCHITECTURAL FIX: Corrected D9 array assignment so Rahu stays Rahu
+        d9_planets_data.append({
+            "name": PLANET_NAMES[i], 
+            "sign": SIGNS[d9_sign_idx]
+        })
         
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
@@ -192,7 +197,7 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     
     for _ in range(15):
         _, live_ascmc = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
-        current_asc = live_ascmc[0]  # ARCHITECTURAL FIX: Extracted correct Ascendant index
+        current_asc = live_ascmc[0]  
         diff = target_asc - current_asc
         
         if diff > 180: diff -= 360
@@ -204,7 +209,6 @@ def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(veri
     true_horary_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
     
     base_cusps = []
-    # ARCHITECTURAL FIX: Mapped 1-indexed houses array properly
     for i in range(1, 13):
         cusp_deg = true_horary_cusps[i]
         sign_idx = int(cusp_deg / 30.0)

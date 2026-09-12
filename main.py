@@ -18,9 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==========================================
-# 1. SECURITY & API KEY MANAGEMENT
-# ==========================================
 API_KEY_NAME = "x-api-key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -36,9 +33,6 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
         detail="Access Denied: Invalid API Key."
     )
 
-# ==========================================
-# 2. KP ASTROLOGY CONSTANTS & 249 GENERATOR
-# ==========================================
 SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
 SIGN_LORDS = ["Mars", "Venus", "Mercury", "Moon", "Sun", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Saturn", "Jupiter"]
 DASHA_SEQ = [("Ketu", 7), ("Venus", 20), ("Sun", 6), ("Moon", 10), ("Mars", 7), ("Rahu", 18), ("Jupiter", 16), ("Saturn", 19), ("Mercury", 17)]
@@ -65,7 +59,6 @@ def build_249_table():
             
             next_deg = current_deg + span
             
-            # STRICT ARCHITECTURAL FIX: Snap to boundary to prevent phantom floating-point seeds
             if abs(next_deg - sign_end) < 0.0001:
                 next_deg = sign_end
                 
@@ -91,7 +84,6 @@ def get_lords(deg):
             star_lord = s["star"]
             sub_lord = s["sub"]
             
-            # Fractal calculation for flawless dynamic Sub-Sub Lords
             sub_lord_idx = next(i for i, v in enumerate(DASHA_SEQ) if v[0] == sub_lord)
             sub_span = s["end"] - s["start"]
             current_ssl_start = s["start"]
@@ -119,9 +111,6 @@ def format_deg(deg):
 def health_check():
     return {"status": "ok", "message": "Swiss Ephemeris 249-Engine Awake"}
 
-# ==========================================
-# 3. SCHEMA FOR NODE.JS INTEGRATION
-# ==========================================
 class HoraryPayload(BaseModel):
     seed: int
     rotate_to_house: int = 1
@@ -139,11 +128,8 @@ class HoraryPayload(BaseModel):
     system: str = "sidereal"
     ayanamsa_name: str = "KP"
 
-# ==========================================
-# 4. LIVE HORARY ENGINE (STRICT SIDEREAL)
-# ==========================================
 @app.post("/kp/horary")
-def generate_kp_horary_post(payload: HoraryPayload):
+def generate_kp_horary_post(payload: HoraryPayload, api_key: str = Security(verify_api_key)):
     if payload.year is not None:
         local_dt = datetime(payload.year, payload.month, payload.day, payload.hour, payload.min, payload.sec)
         utc_dt = local_dt - timedelta(hours=payload.tz)
@@ -173,7 +159,6 @@ def generate_kp_horary_post(payload: HoraryPayload):
         sign_idx = int(deg / 30.0)
         star, sub, sub_sub = get_lords(deg)
         
-        # Calculate D9 Navamsha
         d9_deg = (deg * 9.0) % 360.0
         d9_sign_idx = int(d9_deg / 30.0)
         
@@ -182,18 +167,10 @@ def generate_kp_horary_post(payload: HoraryPayload):
             moon_star_lord = star
 
         planets_data.append({
-            "name": PLANET_NAMES[i],
-            "sign": SIGNS[sign_idx],
-            "degree": format_deg(deg),
-            "star_lord": star,
-            "sub_lord": sub,
-            "sub_sub": sub_sub
+            "name": PLANET_NAMES[i], "sign": SIGNS[sign_idx], "degree": format_deg(deg),
+            "star_lord": star, "sub_lord": sub, "sub_sub": sub_sub
         })
-        
-        d9_planets_data.append({
-            "name": PLANET_NAMES[i],
-            "sign": SIGNS[d9_sign_idx]
-        })
+        d9_planets_data.append({"name": "Ketu" if PLANET_NAMES[i] == "Rahu" else PLANET_NAMES[i], "sign": SIGNS[d9_sign_idx]})
         
     rahu_raw_deg = swe.calc_ut(jd, swe.MEAN_NODE, flags)[0][0]
     ketu_raw_deg = (rahu_raw_deg + 180.0) % 360
@@ -210,13 +187,12 @@ def generate_kp_horary_post(payload: HoraryPayload):
     
     d9_planets_data.append({"name": "Ketu", "sign": SIGNS[d9_k_sign_idx]})
 
-    # 3. HOUSE CUSP CALCULATION (ITERATIVE HORARY SHIFT)
     target_asc = seed_data["start"] + 0.0001 
     jd_guess = jd
     
     for _ in range(15):
-        live_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
-        current_asc = live_cusps[0]
+        _, live_ascmc = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
+        current_asc = live_ascmc[0]  # ARCHITECTURAL FIX: Extracted correct Ascendant index
         diff = target_asc - current_asc
         
         if diff > 180: diff -= 360
@@ -228,13 +204,14 @@ def generate_kp_horary_post(payload: HoraryPayload):
     true_horary_cusps, _ = swe.houses_ex(jd_guess, payload.lat, payload.lon, b'P', flags)
     
     base_cusps = []
-    for i in range(12):
+    # ARCHITECTURAL FIX: Mapped 1-indexed houses array properly
+    for i in range(1, 13):
         cusp_deg = true_horary_cusps[i]
         sign_idx = int(cusp_deg / 30.0)
         c_star, c_sub, c_sub_sub = get_lords(cusp_deg)
         base_cusps.append({
-            "house": i + 1, "sign": SIGNS[sign_idx], "degree": format_deg(cusp_deg),
-            "star_lord": c_star, "sub_lord": c_sub, "sub_sub": c_sub_sub
+            "house": i, "sign": SIGNS[sign_idx], "degree": format_deg(cusp_deg),
+            "degree_raw": cusp_deg, "star_lord": c_star, "sub_lord": c_sub, "sub_sub": c_sub_sub
         })
         
     rotated_cusps = []
@@ -245,12 +222,11 @@ def generate_kp_horary_post(payload: HoraryPayload):
         original_cusp["house"] = i + 1 
         rotated_cusps.append(original_cusp)
 
-    # 4. CAPTURE D9 & TRANSIT ASCENDANTS
     d9_asc_deg = (rotated_cusps[0]["degree_raw"] if "degree_raw" in rotated_cusps[0] else (target_asc * 9.0)) % 360.0
     d9_asc_sign = SIGNS[int(d9_asc_deg / 30.0)]
     
-    live_transit_cusps, _ = swe.houses_ex(jd, payload.lat, payload.lon, b'P', flags)
-    transit_asc_sign = SIGNS[int(live_transit_cusps[0] / 30.0)]
+    _, live_transit_ascmc = swe.houses_ex(jd, payload.lat, payload.lon, b'P', flags)
+    transit_asc_sign = SIGNS[int(live_transit_ascmc[0] / 30.0)]
 
     day_idx = ist_now.weekday()
     day_lord = DAY_PLANET_MAP[day_idx]
@@ -276,6 +252,11 @@ def generate_kp_horary_post(payload: HoraryPayload):
         "cusps": rotated_cusps,
         "ruling_planets": ruling_planets_data
     }
+
+@app.get("/api/horary")
+def generate_kp_horary_get(seed: int = Query(..., ge=1, le=249), rotate: int = Query(1, ge=1, le=12), api_key: str = Security(verify_api_key)):
+    req = HoraryPayload(seed=seed, rotate_to_house=rotate)
+    return generate_kp_horary_post(req, api_key)
 
 if __name__ == "__main__":
     import uvicorn
